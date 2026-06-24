@@ -2,9 +2,21 @@
 
 Extracts the **current selection** from a Figma file into an **LLM-ready
 payload**: compact node JSON (geometry, text, fills, strokes, auto-layout,
-component props) **plus a rendered PNG** of each selected layer. Export-only for
-now — copy or download the bundle and feed it to any agent. Wiring a direct
-"send to agent" call is one handler away (see [Sending to an LLM](#sending-to-an-llm-later)).
+component props, **variables inlined on each value**) **plus a rendered image**
+of each element — PNG, or **SVG markup** for vectors/icons. Pick which crops and
+which variable collections to include, then copy the payload or download the
+bundle and feed it to any agent. Wiring a direct "send to agent" call is one
+handler away (see [Sending to an LLM](#sending-to-an-llm-later)).
+
+<p align="center">
+  <img src="assets/screenshot.png" alt="LLM Export plugin UI — selection crops, variable-collection picker, and the live JSON payload" width="420">
+</p>
+
+**Why** — stop pasting screenshots and guessing. An agent doing design-to-code,
+design QA, or component work gets the real structure: exact sizes, the design
+**token** behind each value (not just the resolved number), the styled text
+runs, the effects, and the cropped visuals — all in one JSON it can actually
+reason over.
 
 ## Payload shape
 
