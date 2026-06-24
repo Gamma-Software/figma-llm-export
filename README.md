@@ -65,10 +65,17 @@ npm run typecheck  # tsc --noEmit
 | Button | Does |
 |--------|------|
 | ↻ Refresh selection | Re-reads the selection and re-renders PNGs |
-| Copy payload | Full JSON (incl. base64 images) → clipboard |
+| Copy payload | JSON (incl. base64 of **checked** crops) → clipboard |
 | Download JSON | Node tree only, images as metadata (no base64) |
-| Download PNG(s) | Each selected layer as a `@2x` PNG file |
-| Download LLM bundle | Full payload incl. base64 PNGs (one file) |
+| Download PNG(s) | Each **checked** crop as a `@2x` PNG file |
+| Download LLM bundle | Full payload incl. base64 of **checked** crops (one file) |
+
+### Picking crops
+
+Every cropped PNG renders as a thumbnail with a checkbox — click to
+include/exclude it. **All** / **None** toggle everything; the counter shows
+`kept / total`. Only checked crops land in any payload or download. The node
+JSON (`nodes`) is always full regardless of crop selection.
 
 ## Sending to an LLM later
 

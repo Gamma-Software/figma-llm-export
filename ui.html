@@ -67,6 +67,24 @@
         color: var(--muted);
         margin: 0 0 6px;
       }
+      .thumbs-head {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 8px;
+      }
+      .thumbs-head .section-label { margin-bottom: 6px; }
+      .sel-tools { display: flex; align-items: center; gap: 8px; font-size: 10px; color: var(--muted); }
+      .link {
+        background: none;
+        border: none;
+        padding: 0;
+        color: var(--accent);
+        cursor: pointer;
+        font: inherit;
+        font-size: 10px;
+      }
+      .link:hover { text-decoration: underline; background: none; }
       #thumbs {
         display: flex;
         flex-wrap: wrap;
@@ -75,12 +93,40 @@
       }
       #thumbs:empty { display: none; }
       .thumb {
+        position: relative;
         border: 1px solid var(--border);
         border-radius: 6px;
         padding: 4px;
         background: var(--surface);
         max-width: 120px;
+        cursor: pointer;
+        opacity: 0.45;
+        transition: opacity 0.1s, border-color 0.1s;
       }
+      .thumb.selected {
+        opacity: 1;
+        border-color: var(--accent);
+        box-shadow: 0 0 0 1px var(--accent);
+      }
+      .thumb .check {
+        position: absolute;
+        top: 6px;
+        left: 6px;
+        width: 16px;
+        height: 16px;
+        border-radius: 4px;
+        border: 1px solid var(--border);
+        background: var(--bg);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 11px;
+        line-height: 1;
+        color: var(--accent-fg);
+      }
+      .thumb.selected .check { background: var(--accent); border-color: transparent; }
+      .thumb .check::after { content: ""; }
+      .thumb.selected .check::after { content: "✓"; }
       .thumb img { display: block; max-width: 110px; max-height: 90px; border-radius: 3px; }
       .thumb span {
         display: block;
@@ -141,7 +187,14 @@
     <main>
       <div id="empty" class="empty">Select one or more layers, then hit <b>Refresh</b>.</div>
       <div id="content" hidden>
-        <p class="section-label">Rendered PNG(s)</p>
+        <div class="thumbs-head">
+          <span class="section-label">Cropped PNGs — pick which to include</span>
+          <span class="sel-tools">
+            <span id="selCount"></span>
+            <button class="link" id="selAll" type="button">All</button>
+            <button class="link" id="selNone" type="button">None</button>
+          </span>
+        </div>
         <div id="thumbs"></div>
         <p class="section-label">Payload</p>
         <pre id="json"></pre>
@@ -166,9 +219,28 @@
 
       const minDim = () => Math.max(0, parseInt(minDimEl.value, 10) || 0);
 
-      // Holds the latest export so the footer buttons can act on it.
-      let payload = null;   // { source, exportedAt, file, page, selectionCount, nodes, images:[{id,name,mimeType,scale,base64}] }
-      let rawImages = [];   // [{ id, name, scale, bytes:Uint8Array }]
+      // Latest export. `selected` holds the indices the user kept checked; the
+      // footer actions build their payload from that subset only.
+      let meta = null;      // { file, page, selectionCount, truncated }
+      let nodes = [];       // serialized node tree
+      let rawImages = [];   // [{ id, name, type, scale, bytes:Uint8Array }]
+      let allImages = [];   // rawImages + { mimeType, base64 }
+      let selected = new Set();
+
+      const chosen = () => allImages.filter((_, i) => selected.has(i));
+      const chosenRaw = () => rawImages.filter((_, i) => selected.has(i));
+
+      function buildPayload() {
+        return {
+          source: "figma",
+          exportedAt: new Date().toISOString(),
+          file: meta.file,
+          page: meta.page,
+          selectionCount: meta.selectionCount,
+          nodes,
+          images: chosen(),
+        };
+      }
 
       const post = (type, extra) => parent.postMessage({ pluginMessage: { type, ...extra } }, "*");
 
@@ -224,8 +296,10 @@
         }
 
         if (msg.type === "empty") {
-          payload = null;
+          meta = null;
           rawImages = [];
+          allImages = [];
+          selected = new Set();
           contentEl.hidden = true;
           emptyEl.hidden = false;
           statusEl.textContent = "nothing selected";
@@ -240,7 +314,7 @@
 
         if (msg.type === "hint") {
           // Light live feedback only; data is rebuilt on Refresh.
-          if (!payload) statusEl.textContent = msg.count ? msg.count + " selected — Refresh" : "nothing selected";
+          if (!meta) statusEl.textContent = msg.count ? msg.count + " selected — Refresh" : "nothing selected";
           return;
         }
 
@@ -248,8 +322,10 @@
           emptyEl.hidden = true;
           contentEl.hidden = false;
 
+          meta = msg.meta;
+          nodes = msg.nodes;
           rawImages = msg.images || [];
-          const images = rawImages.map((img) => ({
+          allImages = rawImages.map((img) => ({
             id: img.id,
             name: img.name,
             type: img.type,
@@ -257,48 +333,59 @@
             scale: img.scale,
             base64: bytesToBase64(img.bytes),
           }));
+          selected = new Set(allImages.map((_, i) => i)); // all on by default
 
-          payload = {
-            source: "figma",
-            exportedAt: new Date().toISOString(),
-            file: msg.meta.file,
-            page: msg.meta.page,
-            selectionCount: msg.meta.selectionCount,
-            nodes: msg.nodes,
-            images,
-          };
-
-          // Thumbnails
-          thumbsEl.innerHTML = "";
-          for (const img of rawImages) {
-            const blob = new Blob([img.bytes], { type: "image/png" });
-            const url = URL.createObjectURL(blob);
-            const wrap = document.createElement("div");
-            wrap.className = "thumb";
-            const el = document.createElement("img");
-            el.src = url;
-            const cap = document.createElement("span");
-            cap.textContent = img.name;
-            cap.title = img.name + " · " + img.type;
-            wrap.appendChild(el);
-            wrap.appendChild(cap);
-            thumbsEl.appendChild(wrap);
-          }
-
-          // JSON preview — node tree only (images shown as thumbnails above; the
-          // base64 blobs live in the downloadable bundle, not the preview).
-          jsonEl.textContent = JSON.stringify(
-            { ...payload, images: images.map((i) => ({ ...i, base64: "<" + i.base64.length + " base64 chars>" })) },
-            null,
-            2
-          );
-
-          statusEl.textContent =
-            msg.meta.selectionCount + " selected · " + rawImages.length + " crop(s)" +
-            (msg.meta.truncated ? " (capped)" : "");
+          renderThumbs();
+          refreshView();
           setEnabled(true);
         }
       };
+
+      function renderThumbs() {
+        thumbsEl.innerHTML = "";
+        rawImages.forEach((img, i) => {
+          const blob = new Blob([img.bytes], { type: "image/png" });
+          const url = URL.createObjectURL(blob);
+          const wrap = document.createElement("div");
+          wrap.className = "thumb" + (selected.has(i) ? " selected" : "");
+          wrap.title = img.name + " · " + img.type + " — click to include/exclude";
+          const check = document.createElement("div");
+          check.className = "check";
+          const el = document.createElement("img");
+          el.src = url;
+          const cap = document.createElement("span");
+          cap.textContent = img.name;
+          wrap.appendChild(check);
+          wrap.appendChild(el);
+          wrap.appendChild(cap);
+          wrap.onclick = () => {
+            if (selected.has(i)) selected.delete(i);
+            else selected.add(i);
+            wrap.classList.toggle("selected", selected.has(i));
+            refreshView();
+          };
+          thumbsEl.appendChild(wrap);
+        });
+      }
+
+      // Refresh count, JSON preview, and status from current selection.
+      function refreshView() {
+        $("selCount").textContent = selected.size + " / " + allImages.length;
+        const preview = {
+          ...buildPayload(),
+          images: chosen().map((i) => ({ ...i, base64: "<" + i.base64.length + " base64 chars>" })),
+        };
+        jsonEl.textContent = JSON.stringify(preview, null, 2);
+        statusEl.textContent =
+          meta.selectionCount + " selected · " + selected.size + "/" + allImages.length + " crop(s) kept" +
+          (meta.truncated ? " (capped)" : "");
+      }
+
+      function selectAll(on) {
+        selected = on ? new Set(allImages.map((_, i) => i)) : new Set();
+        renderThumbs();
+        refreshView();
+      }
 
       // --- footer actions ---
       $("refresh").onclick = () => post("rerun", { minDim: minDim() });
@@ -307,20 +394,24 @@
       // (also persisted sandbox-side).
       minDimEl.onchange = () => post("rerun", { minDim: minDim() });
 
+      $("selAll").onclick = () => selectAll(true);
+      $("selNone").onclick = () => selectAll(false);
+
       $("copy").onclick = async () => {
-        if (!payload) return;
-        await copyText(JSON.stringify(payload, null, 2));
-        post("notify", { text: "Payload copied to clipboard" });
+        if (!meta) return;
+        await copyText(JSON.stringify(buildPayload(), null, 2));
+        post("notify", { text: "Payload copied (" + selected.size + " crop(s))" });
       };
 
       $("dlJson").onclick = () => {
-        if (!payload) return;
-        const nodesOnly = { ...payload, images: payload.images.map(({ base64, ...rest }) => rest) };
-        download(slug(payload.file) + "-nodes.json", new Blob([JSON.stringify(nodesOnly, null, 2)], { type: "application/json" }));
+        if (!meta) return;
+        const p = buildPayload();
+        const nodesOnly = { ...p, images: p.images.map(({ base64, ...rest }) => rest) };
+        download(slug(p.file) + "-nodes.json", new Blob([JSON.stringify(nodesOnly, null, 2)], { type: "application/json" }));
       };
 
       $("dlPng").onclick = () => {
-        rawImages.forEach((img, i) => {
+        chosenRaw().forEach((img, i) => {
           // Index-prefix: sibling elements often share a name — avoids clobbering.
           const fname = String(i + 1).padStart(2, "0") + "-" + slug(img.name) + "@" + img.scale + "x.png";
           download(fname, new Blob([img.bytes], { type: "image/png" }));
@@ -328,8 +419,9 @@
       };
 
       $("dlBundle").onclick = () => {
-        if (!payload) return;
-        download(slug(payload.file) + "-llm-bundle.json", new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }));
+        if (!meta) return;
+        const p = buildPayload();
+        download(slug(p.file) + "-llm-bundle.json", new Blob([JSON.stringify(p, null, 2)], { type: "application/json" }));
       };
     </script>
   </body>
