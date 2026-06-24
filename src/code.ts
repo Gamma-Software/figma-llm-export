@@ -157,8 +157,19 @@ async function serialize(node: BaseNode, depth: number): Promise<SerializedNode>
   if ("opacity" in node && (node as BlendMixin & { opacity: number }).opacity !== 1) {
     out.opacity = round((node as unknown as { opacity: number }).opacity);
   }
-  if ("cornerRadius" in node && !isMixed(n.cornerRadius) && (n.cornerRadius as number) > 0) {
-    out.cornerRadius = n.cornerRadius;
+  if ("cornerRadius" in node) {
+    if (!isMixed(n.cornerRadius)) {
+      if ((n.cornerRadius as number) > 0) out.cornerRadius = n.cornerRadius;
+    } else {
+      // Mixed corners: figma.mixed isn't serializable, so expand the per-corner
+      // radii (each is a plain number) instead of dropping the field.
+      out.cornerRadius = {
+        topLeft: n.topLeftRadius,
+        topRight: n.topRightRadius,
+        bottomRight: n.bottomRightRadius,
+        bottomLeft: n.bottomLeftRadius,
+      };
+    }
   }
 
   // Text
