@@ -32,6 +32,33 @@
       }
       header h1 { font-size: 13px; margin: 0; font-weight: 600; }
       #status { color: var(--muted); font-size: 11px; }
+      #toolbar {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 8px 14px;
+        border-bottom: 1px solid var(--border);
+        background: var(--surface);
+        font-size: 11px;
+      }
+      #toolbar label { font-weight: 500; }
+      #toolbar input {
+        width: 56px;
+        font: inherit;
+        padding: 3px 6px;
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        background: var(--bg);
+        color: var(--fg);
+      }
+      #toolbar .unit { color: var(--muted); }
+      #toolbar .hint {
+        color: var(--muted);
+        margin-left: auto;
+        text-align: right;
+        font-size: 10px;
+        max-width: 190px;
+      }
       main { flex: 1; overflow-y: auto; padding: 12px 14px; }
       .section-label {
         font-size: 10px;
@@ -105,6 +132,12 @@
       <h1>LLM Export</h1>
       <span id="status">…</span>
     </header>
+    <div id="toolbar">
+      <label for="minDim">Min crop size</label>
+      <input id="minDim" type="number" min="0" step="1" value="24" />
+      <span class="unit">px</span>
+      <span class="hint">elements smaller than this aren't cropped on their own</span>
+    </div>
     <main>
       <div id="empty" class="empty">Select one or more layers, then hit <b>Refresh</b>.</div>
       <div id="content" hidden>
@@ -129,6 +162,9 @@
       const contentEl = $("content");
       const thumbsEl = $("thumbs");
       const jsonEl = $("json");
+      const minDimEl = $("minDim");
+
+      const minDim = () => Math.max(0, parseInt(minDimEl.value, 10) || 0);
 
       // Holds the latest export so the footer buttons can act on it.
       let payload = null;   // { source, exportedAt, file, page, selectionCount, nodes, images:[{id,name,mimeType,scale,base64}] }
@@ -180,6 +216,12 @@
       onmessage = (event) => {
         const msg = event.data.pluginMessage;
         if (!msg) return;
+
+        if (msg.type === "settings") {
+          // Saved threshold restored from clientStorage.
+          if (typeof msg.minDim === "number") minDimEl.value = msg.minDim;
+          return;
+        }
 
         if (msg.type === "empty") {
           payload = null;
@@ -259,7 +301,11 @@
       };
 
       // --- footer actions ---
-      $("refresh").onclick = () => post("rerun");
+      $("refresh").onclick = () => post("rerun", { minDim: minDim() });
+
+      // Changing the threshold re-exports immediately with the new value
+      // (also persisted sandbox-side).
+      minDimEl.onchange = () => post("rerun", { minDim: minDim() });
 
       $("copy").onclick = async () => {
         if (!payload) return;

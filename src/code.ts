@@ -194,14 +194,14 @@ async function exportPng(node: SceneNode): Promise<ExportedImage | null> {
   }
 }
 
-// Worth its own cropped PNG? Text/vectors and sub-threshold elements are not —
+// Worth its own cropped PNG? Text/vectors and elements below `minDim` are not —
 // they render fine inside their parent's crop and would just be noise.
-function worthCropping(node: SceneNode): boolean {
+function worthCropping(node: SceneNode, minDim: number): boolean {
   if (node.visible === false) return false;
   if (SKIP_EXPORT_TYPES.indexOf(node.type) !== -1) return false;
   const w = (node as LayoutMixin).width;
   const h = (node as LayoutMixin).height;
-  return w >= MIN_EXPORT_DIM && h >= MIN_EXPORT_DIM;
+  return w >= minDim && h >= minDim;
 }
 
 // Recursively crop a PNG for each meaningful element. `isRoot` nodes (what the
@@ -210,11 +210,12 @@ async function collectExports(
   node: SceneNode,
   images: ExportedImage[],
   depth: number,
-  isRoot: boolean
+  isRoot: boolean,
+  minDim: number
 ): Promise<void> {
   if (images.length >= MAX_EXPORTS) return;
 
-  if (isRoot || worthCropping(node)) {
+  if (isRoot || worthCropping(node, minDim)) {
     const img = await exportPng(node);
     if (img) images.push(img);
   }
@@ -226,12 +227,12 @@ async function collectExports(
   ) {
     for (const child of (node as ChildrenMixin).children as SceneNode[]) {
       if (images.length >= MAX_EXPORTS) break;
-      await collectExports(child, images, depth + 1, false);
+      await collectExports(child, images, depth + 1, false, minDim);
     }
   }
 }
 
-async function run(withImages: boolean): Promise<void> {
+async function run(withImages: boolean, minDim: number): Promise<void> {
   const selection = figma.currentPage.selection;
   if (!selection.length) {
     figma.ui.postMessage({ type: "empty" });
@@ -246,7 +247,7 @@ async function run(withImages: boolean): Promise<void> {
   if (withImages) {
     for (const s of selection) {
       if (images.length >= MAX_EXPORTS) break;
-      await collectExports(s, images, 0, true);
+      await collectExports(s, images, 0, true, minDim);
     }
   }
 
@@ -264,12 +265,23 @@ async function run(withImages: boolean): Promise<void> {
   });
 }
 
-figma.showUI(__html__, { width: 440, height: 680, themeColors: true });
+const STORAGE_MIN_DIM = "minExportDim";
+let minExportDim = MIN_EXPORT_DIM; // live value, persisted across reloads
 
-figma.ui.onmessage = (msg: { type: string }) => {
-  if (msg.type === "rerun") void run(true);
-  else if (msg.type === "close") figma.closePlugin();
-  else if (msg.type === "notify") figma.notify((msg as unknown as { text: string }).text);
+figma.showUI(__html__, { width: 440, height: 720, themeColors: true });
+
+figma.ui.onmessage = async (msg: { type: string; minDim?: number; text?: string }) => {
+  if (msg.type === "rerun") {
+    if (typeof msg.minDim === "number" && msg.minDim >= 0) {
+      minExportDim = Math.floor(msg.minDim);
+      await figma.clientStorage.setAsync(STORAGE_MIN_DIM, minExportDim);
+    }
+    void run(true, minExportDim);
+  } else if (msg.type === "close") {
+    figma.closePlugin();
+  } else if (msg.type === "notify" && msg.text) {
+    figma.notify(msg.text);
+  }
 };
 
 // Live count hint as selection changes; full bundle only on demand (PNG export
@@ -278,4 +290,10 @@ figma.on("selectionchange", () => {
   figma.ui.postMessage({ type: "hint", count: figma.currentPage.selection.length });
 });
 
-void run(true);
+// Restore the saved threshold, tell the UI, then do the first export.
+(async () => {
+  const stored = await figma.clientStorage.getAsync(STORAGE_MIN_DIM);
+  if (typeof stored === "number" && stored >= 0) minExportDim = stored;
+  figma.ui.postMessage({ type: "settings", minDim: minExportDim });
+  void run(true, minExportDim);
+})();

@@ -30,11 +30,15 @@ are always exported regardless. Tunable at the top of `src/code.ts`:
 
 | const | default | meaning |
 |-------|---------|---------|
-| `MIN_EXPORT_DIM` | `24` | child elements below this (px, either side) aren't cropped on their own |
+| `MIN_EXPORT_DIM` | `24` | **default** min crop size — editable live in the UI (**Min crop size** field), persisted across reloads via `clientStorage` |
 | `SKIP_EXPORT_TYPES` | `TEXT, VECTOR, LINE, SLICE` | types never cropped standalone |
 | `NO_RECURSE_EXPORT` | `INSTANCE` | treated as one atomic block, no crops of internals |
 | `MAX_EXPORTS` | `80` | hard cap per run (`meta.truncated` flags when hit) |
 | `PNG_SCALE` | `2` | export resolution |
+
+The **Min crop size** field in the plugin re-exports on change and remembers
+your value. Elements smaller than it (either dimension) are skipped — except
+the layers you explicitly selected, which always export.
 
 The `images[].base64` is drop-in for Anthropic's multimodal content blocks
 (`{"type":"image","source":{"type":"base64","media_type":"image/png","data": …}}`).
