@@ -87,8 +87,10 @@ per collection (`id`, `name`, `modes`, `variableIds`, `variables[]`), each
 variable carrying raw `valuesByMode`, `resolvedValuesByMode` (alias chains
 followed, with `alias`/`aliasName`), `scopes`, `hiddenFromPublishing`, and
 `codeSyntax`. **All** / **None** toggle the lot. The **Download variables**
-button saves just the picked collections (or the referenced subset when none
-are picked). The picks are persisted across reloads.
+button saves **one file per picked collection**, each the bare collection
+object — byte-identical to Figma's own variable export (`<Collection>.json`).
+With no collection picked it falls back to the referenced subset. Picks persist
+across reloads.
 
 ## Develop
 

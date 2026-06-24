@@ -503,9 +503,14 @@
 
       $("dlVars").onclick = () => {
         if (!meta) return;
-        // Full local dump when "All variables" is on; otherwise the referenced subset.
-        const data = variableCollections || variables;
-        download(slug(meta.file) + "-variables.json", new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }));
+        if (variableCollections && variableCollections.length) {
+          // One file per collection — bare object, exact Figma export shape.
+          variableCollections.forEach((c) =>
+            download(slug(c.name) + ".json", new Blob([JSON.stringify(c, null, 2)], { type: "application/json" }))
+          );
+        } else {
+          download(slug(meta.file) + "-variables.json", new Blob([JSON.stringify(variables, null, 2)], { type: "application/json" }));
+        }
       };
 
       $("dlBundle").onclick = () => {
