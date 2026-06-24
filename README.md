@@ -15,15 +15,22 @@ now — copy or download the bundle and feed it to any agent. Wiring a direct
   "file": "My File",
   "page": "Page 1",
   "selectionCount": 2,
-  "nodes": [ { "id", "name", "type", "width", "height", "characters", "fills", "layout", … } ],
+  "nodes": [ { "id", "name", "type", "width", "height", "characters", "fills", "strokes",
+             "effects", "layout", "layoutSizing", "constraints", "cornerRadius",
+             "lineHeight", "letterSpacing", "textCase", "mainComponent", … } ],
   "images": [ { "id", "name", "type", "mimeType": "image/png", "scale": 2, "base64": "iVBORw0K…" } ]
 }
 ```
 
 ### Per-element crops
 
-Each meaningful element gets its **own** PNG cropped to its bounds (the tree is
-walked recursively), so an agent can look at pieces, not just the whole frame.
+Each meaningful element gets its **own** image cropped to its bounds (the tree
+is walked recursively), so an agent can look at pieces, not just the whole frame.
+
+Tick **Icons → SVG** in the toolbar to export vectors and icon-sized elements
+(longer edge ≤ 64px) as **SVG markup** instead of PNG — an agent reads `<path>`
+data far better than a blurry raster. PNG crops carry base64; SVG crops carry
+the raw markup string. The toggle is persisted across reloads.
 To avoid a flood of useless slivers, child elements are **skipped** when they
 are text/vectors or smaller than a threshold — the layers you explicitly select
 are always exported regardless. Tunable at the top of `src/code.ts`:

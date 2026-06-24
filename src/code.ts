@@ -22,8 +22,14 @@ const MIN_EXPORT_DIM = 24;
 const SKIP_EXPORT_TYPES: ReadonlyArray<string> = ["TEXT", "VECTOR", "LINE", "SLICE"];
 // Don't crop into these subtrees — treat them as one atomic block.
 const NO_RECURSE_EXPORT: ReadonlyArray<string> = ["INSTANCE"];
-// Hard cap on number of cropped PNGs per run (payload + speed guard).
+// Hard cap on number of cropped exports per run (payload + speed guard).
 const MAX_EXPORTS = 80;
+
+// SVG export (icons/vectors): when enabled, these types — and any node whose
+// longer edge is <= SVG_MAX_DIM (i.e. icon-sized) — export as SVG markup
+// instead of a blurry PNG, which an agent can read as actual <path> data.
+const SVG_TYPES: ReadonlyArray<string> = ["VECTOR", "BOOLEAN_OPERATION", "LINE", "STAR", "POLYGON"];
+const SVG_MAX_DIM = 64;
 
 const round = (n: number): number => Math.round(n * 100) / 100;
 const isMixed = (v: unknown): boolean => typeof v === "symbol";
@@ -49,11 +55,17 @@ async function simplifyPaints(paints: unknown): Promise<unknown> {
         // Inline the bound variable on the color itself: { value, variable }.
         base.color = cb && cb.id ? { value: hex, variable: bindLabel(await resolveVar(cb.id)) } : hex;
       } else if (p.type.startsWith("GRADIENT")) {
-        base.stops = (p as GradientPaint).gradientStops.map((s) => ({
-          position: round(s.position),
-          color: rgbToHex(s.color.r, s.color.g, s.color.b),
-          opacity: round(s.color.a),
-        }));
+        base.stops = await Promise.all(
+          (p as GradientPaint).gradientStops.map(async (s) => {
+            const hex = rgbToHex(s.color.r, s.color.g, s.color.b);
+            const cb = (s as ColorStop & { boundVariables?: { color?: VariableAlias } }).boundVariables?.color;
+            return {
+              position: round(s.position),
+              color: cb && cb.id ? { value: hex, variable: bindLabel(await resolveVar(cb.id)) } : hex,
+              opacity: round(s.color.a),
+            };
+          })
+        );
       } else if (p.type === "IMAGE") {
         base.imageHash = (p as ImagePaint).imageHash;
         base.scaleMode = (p as ImagePaint).scaleMode;
@@ -66,6 +78,23 @@ async function simplifyPaints(paints: unknown): Promise<unknown> {
 function rgbToHex(r: number, g: number, b: number): string {
   const h = (v: number) => Math.round(v * 255).toString(16).padStart(2, "0");
   return `#${h(r)}${h(g)}${h(b)}`;
+}
+
+// Shadows and blurs → compact, agent-readable records (visible effects only).
+function simplifyEffects(effects: unknown): unknown {
+  if (!Array.isArray(effects) || !effects.length) return undefined;
+  const out = (effects as Effect[])
+    .filter((e) => e.visible !== false)
+    .map((e) => {
+      const b: Record<string, unknown> = { type: e.type };
+      const shadow = e as DropShadowEffect;
+      if ("color" in e && shadow.color) b.color = rgbaToHex(shadow.color);
+      if ("offset" in e && shadow.offset) b.offset = { x: round(shadow.offset.x), y: round(shadow.offset.y) };
+      if ("radius" in e) b.radius = round((e as { radius: number }).radius);
+      if ("spread" in e && shadow.spread) b.spread = round(shadow.spread);
+      return b;
+    });
+  return out.length ? out : undefined;
 }
 
 function rgbaToHex(c: RGBA): string {
@@ -347,8 +376,15 @@ async function serialize(node: BaseNode, depth: number): Promise<SerializedNode>
     const t = node as TextNode;
     out.characters = t.characters;
     out.textAlignHorizontal = t.textAlignHorizontal;
+    if (t.textAlignVertical !== "TOP") out.textAlignVertical = t.textAlignVertical;
     if (!isMixed(t.fontSize)) out.fontSize = bind(t.fontSize, "fontSize");
     if (!isMixed(t.fontName)) out.fontName = t.fontName;
+    if (!isMixed(t.fontWeight)) out.fontWeight = t.fontWeight;
+    // Extra typography — only when non-mixed and non-default (keep it terse).
+    if (!isMixed(t.lineHeight) && (t.lineHeight as LineHeight).unit !== "AUTO") out.lineHeight = t.lineHeight;
+    if (!isMixed(t.letterSpacing) && (t.letterSpacing as LetterSpacing).value !== 0) out.letterSpacing = t.letterSpacing;
+    if (!isMixed(t.textCase) && t.textCase !== "ORIGINAL") out.textCase = t.textCase;
+    if (!isMixed(t.textDecoration) && t.textDecoration !== "NONE") out.textDecoration = t.textDecoration;
     // Per-range styling: when any of these is mixed across the string, a single
     // value would be lost — capture the styled segments instead of dropping it.
     if (isMixed(t.fontSize) || isMixed(t.fontName) || isMixed(t.fills as unknown)) {
@@ -386,11 +422,36 @@ async function serialize(node: BaseNode, depth: number): Promise<SerializedNode>
     }
   }
 
+  // Effects (shadows / blurs)
+  if ("effects" in node) {
+    const fx = simplifyEffects((node as BlendMixin).effects);
+    if (fx) out.effects = fx;
+  }
+
+  // Blend mode (non-default only)
+  if ("blendMode" in node) {
+    const bm = (node as BlendMixin).blendMode;
+    if (bm && bm !== "NORMAL" && bm !== "PASS_THROUGH") out.blendMode = bm;
+  }
+
+  // Resize behaviour against the parent — key for reconstructing layout.
+  if ("layoutSizingHorizontal" in node) {
+    out.layoutSizing = {
+      h: (node as unknown as { layoutSizingHorizontal: string }).layoutSizingHorizontal,
+      v: (node as unknown as { layoutSizingVertical: string }).layoutSizingVertical,
+    };
+  }
+  if ("constraints" in node) {
+    const c = (node as ConstraintMixin).constraints;
+    out.constraints = { h: c.horizontal, v: c.vertical };
+  }
+
   // Auto-layout
   if ("layoutMode" in node && (node as FrameNode).layoutMode !== "NONE") {
     const f = node as FrameNode;
     out.layout = {
       mode: f.layoutMode,
+      wrap: f.layoutWrap === "WRAP" ? true : undefined,
       itemSpacing: bind(f.itemSpacing, "itemSpacing"),
       padding: [
         bind(f.paddingTop, "paddingTop"),
@@ -402,14 +463,28 @@ async function serialize(node: BaseNode, depth: number): Promise<SerializedNode>
       counterAxisAlignItems: f.counterAxisAlignItems,
     };
   }
+  if ("clipsContent" in node && (node as FrameNode).clipsContent) out.clipsContent = true;
 
-  // Component instance properties
+  // Components
   if (node.type === "INSTANCE") {
     try {
       out.componentProperties = (node as InstanceNode).componentProperties;
     } catch {
       /* ignore */
     }
+    try {
+      const mc = await (node as InstanceNode).getMainComponentAsync();
+      if (mc) {
+        out.mainComponent =
+          mc.parent && mc.parent.type === "COMPONENT_SET" ? `${mc.parent.name} / ${mc.name}` : mc.name;
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  if (node.type === "COMPONENT") {
+    const vp = (node as ComponentNode).variantProperties;
+    if (vp) out.variantProperties = vp;
   }
 
   // Children
@@ -425,47 +500,66 @@ interface ExportedImage {
   id: string;
   name: string;
   type: string;
+  format: "PNG" | "SVG";
+  mimeType: string;
   scale: number;
   bytes: Uint8Array;
 }
 
-async function exportPng(node: SceneNode): Promise<ExportedImage | null> {
+// Export a node as PNG (raster) or SVG (vector markup).
+async function exportNode(node: SceneNode, format: "PNG" | "SVG"): Promise<ExportedImage | null> {
   if (typeof (node as ExportMixin).exportAsync !== "function") return null;
   try {
+    if (format === "SVG") {
+      const bytes = await (node as ExportMixin).exportAsync({ format: "SVG" });
+      return { id: node.id, name: node.name, type: node.type, format: "SVG", mimeType: "image/svg+xml", scale: 1, bytes };
+    }
     const bytes = await (node as ExportMixin).exportAsync({
       format: "PNG",
       constraint: { type: "SCALE", value: PNG_SCALE },
     });
-    return { id: node.id, name: node.name, type: node.type, scale: PNG_SCALE, bytes };
+    return { id: node.id, name: node.name, type: node.type, format: "PNG", mimeType: "image/png", scale: PNG_SCALE, bytes };
   } catch (e) {
-    console.warn("PNG export failed for", node.name, e);
+    console.warn(format + " export failed for", node.name, e);
     return null;
   }
 }
 
-// Worth its own cropped PNG? Text/vectors and elements below `minDim` are not —
-// they render fine inside their parent's crop and would just be noise.
-function worthCropping(node: SceneNode, minDim: number): boolean {
+// SVG when enabled and the node is a vector type or icon-sized (longer edge
+// <= SVG_MAX_DIM) — an agent reads <path> markup better than a tiny raster.
+function pickFormat(node: SceneNode, svgIcons: boolean): "PNG" | "SVG" {
+  if (!svgIcons) return "PNG";
+  const longer = Math.max((node as LayoutMixin).width, (node as LayoutMixin).height);
+  return SVG_TYPES.indexOf(node.type) !== -1 || longer <= SVG_MAX_DIM ? "SVG" : "PNG";
+}
+
+// Worth its own cropped export? Text and elements below `minDim` are not —
+// they render fine inside their parent and would just be noise. (Vectors are
+// kept here because they're valuable as standalone SVG.)
+function worthCropping(node: SceneNode, minDim: number, svgIcons: boolean): boolean {
   if (node.visible === false) return false;
-  if (SKIP_EXPORT_TYPES.indexOf(node.type) !== -1) return false;
+  // A vector is skipped as a PNG sliver, but kept when it can be SVG.
+  const skip = SKIP_EXPORT_TYPES.indexOf(node.type) !== -1;
+  if (skip && !(svgIcons && SVG_TYPES.indexOf(node.type) !== -1)) return false;
   const w = (node as LayoutMixin).width;
   const h = (node as LayoutMixin).height;
   return w >= minDim && h >= minDim;
 }
 
-// Recursively crop a PNG for each meaningful element. `isRoot` nodes (what the
-// user explicitly selected) are always exported, even text/small ones.
+// Recursively export each meaningful element. `isRoot` nodes (what the user
+// explicitly selected) are always exported, even text/small ones.
 async function collectExports(
   node: SceneNode,
   images: ExportedImage[],
   depth: number,
   isRoot: boolean,
-  minDim: number
+  minDim: number,
+  svgIcons: boolean
 ): Promise<void> {
   if (images.length >= MAX_EXPORTS) return;
 
-  if (isRoot || worthCropping(node, minDim)) {
-    const img = await exportPng(node);
+  if (isRoot || worthCropping(node, minDim, svgIcons)) {
+    const img = await exportNode(node, pickFormat(node, svgIcons));
     if (img) images.push(img);
   }
 
@@ -476,12 +570,17 @@ async function collectExports(
   ) {
     for (const child of (node as ChildrenMixin).children as SceneNode[]) {
       if (images.length >= MAX_EXPORTS) break;
-      await collectExports(child, images, depth + 1, false, minDim);
+      await collectExports(child, images, depth + 1, false, minDim, svgIcons);
     }
   }
 }
 
-async function run(withImages: boolean, minDim: number, collectionIds: string[]): Promise<void> {
+async function run(
+  withImages: boolean,
+  minDim: number,
+  collectionIds: string[],
+  svgIcons: boolean
+): Promise<void> {
   const selection = figma.currentPage.selection;
   if (!selection.length) {
     figma.ui.postMessage({ type: "empty" });
@@ -503,7 +602,7 @@ async function run(withImages: boolean, minDim: number, collectionIds: string[])
   if (withImages) {
     for (const s of selection) {
       if (images.length >= MAX_EXPORTS) break;
-      await collectExports(s, images, 0, true, minDim);
+      await collectExports(s, images, 0, true, minDim, svgIcons);
     }
   }
 
@@ -528,15 +627,18 @@ async function run(withImages: boolean, minDim: number, collectionIds: string[])
 
 const STORAGE_MIN_DIM = "minExportDim";
 const STORAGE_COLLECTIONS = "exportCollectionIds";
+const STORAGE_SVG = "svgIcons";
 let minExportDim = MIN_EXPORT_DIM; // live values, persisted across reloads
 let exportCollectionIds: string[] = [];
+let svgIcons = false;
 
-figma.showUI(__html__, { width: 440, height: 740, themeColors: true });
+figma.showUI(__html__, { width: 440, height: 760, themeColors: true });
 
 figma.ui.onmessage = async (msg: {
   type: string;
   minDim?: number;
   collectionIds?: string[];
+  svgIcons?: boolean;
   text?: string;
 }) => {
   if (msg.type === "rerun") {
@@ -548,7 +650,11 @@ figma.ui.onmessage = async (msg: {
       exportCollectionIds = msg.collectionIds.filter((x) => typeof x === "string");
       await figma.clientStorage.setAsync(STORAGE_COLLECTIONS, exportCollectionIds);
     }
-    void run(true, minExportDim, exportCollectionIds);
+    if (typeof msg.svgIcons === "boolean") {
+      svgIcons = msg.svgIcons;
+      await figma.clientStorage.setAsync(STORAGE_SVG, svgIcons);
+    }
+    void run(true, minExportDim, exportCollectionIds, svgIcons);
   } else if (msg.type === "close") {
     figma.closePlugin();
   } else if (msg.type === "notify" && msg.text) {
@@ -568,6 +674,8 @@ figma.on("selectionchange", () => {
   if (typeof storedDim === "number" && storedDim >= 0) minExportDim = storedDim;
   const storedCols = await figma.clientStorage.getAsync(STORAGE_COLLECTIONS);
   if (Array.isArray(storedCols)) exportCollectionIds = storedCols.filter((x) => typeof x === "string");
+  const storedSvg = await figma.clientStorage.getAsync(STORAGE_SVG);
+  if (typeof storedSvg === "boolean") svgIcons = storedSvg;
   const collections = await listCollections();
   // Drop any saved ids whose collection no longer exists.
   const live = new Set(collections.map((c) => c.id));
@@ -577,6 +685,7 @@ figma.on("selectionchange", () => {
     minDim: minExportDim,
     collections,
     collectionIds: exportCollectionIds,
+    svgIcons,
   });
-  void run(true, minExportDim, exportCollectionIds);
+  void run(true, minExportDim, exportCollectionIds, svgIcons);
 })();

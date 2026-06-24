@@ -52,6 +52,15 @@
         color: var(--fg);
       }
       #toolbar .unit { color: var(--muted); }
+      #toolbar .opt {
+        margin-left: auto;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        cursor: pointer;
+        font-weight: 500;
+      }
+      #toolbar .opt input { cursor: pointer; }
       #varbar {
         padding: 8px 14px;
         border-bottom: 1px solid var(--border);
@@ -188,6 +197,9 @@
       <label for="minDim">Min crop size</label>
       <input id="minDim" type="number" min="0" step="1" value="24" />
       <span class="unit">px</span>
+      <label class="opt" title="Export vectors and icon-sized elements as SVG markup instead of PNG">
+        <input type="checkbox" id="svgIcons" /> Icons → SVG
+      </label>
     </div>
     <div id="varbar">
       <div class="vb-head">
@@ -219,7 +231,7 @@
       <button id="refresh">↻ Refresh selection</button>
       <button id="copy" disabled>Copy payload</button>
       <button id="dlJson" disabled>Download JSON</button>
-      <button id="dlPng" disabled>Download PNG(s)</button>
+      <button id="dlPng" disabled>Download images</button>
       <button id="dlVars" disabled>Download variables</button>
       <button id="dlBundle" class="primary" disabled>Download LLM bundle (JSON + base64 PNG)</button>
     </footer>
@@ -232,13 +244,14 @@
       const thumbsEl = $("thumbs");
       const jsonEl = $("json");
       const minDimEl = $("minDim");
+      const svgEl = $("svgIcons");
       const collListEl = $("collList");
 
       let collections = [];          // [{ id, name, variableCount }]
       let selectedColl = new Set();  // collection ids picked for full export
 
       const minDim = () => Math.max(0, parseInt(minDimEl.value, 10) || 0);
-      const opts = () => ({ minDim: minDim(), collectionIds: [...selectedColl] });
+      const opts = () => ({ minDim: minDim(), collectionIds: [...selectedColl], svgIcons: svgEl.checked });
 
       // Render the collection checklist, preserving current ticks.
       function renderCollections() {
@@ -346,6 +359,7 @@
         if (msg.type === "settings") {
           // Saved settings + collection list restored from the sandbox.
           if (typeof msg.minDim === "number") minDimEl.value = msg.minDim;
+          if (typeof msg.svgIcons === "boolean") svgEl.checked = msg.svgIcons;
           collections = msg.collections || [];
           selectedColl = new Set(msg.collectionIds || []);
           renderCollections();
@@ -390,14 +404,20 @@
             collections = msg.collections; // keep counts fresh
             renderCollections();
           }
-          allImages = rawImages.map((img) => ({
-            id: img.id,
-            name: img.name,
-            type: img.type,
-            mimeType: "image/png",
-            scale: img.scale,
-            base64: bytesToBase64(img.bytes),
-          }));
+          allImages = rawImages.map((img) => {
+            const out = {
+              id: img.id,
+              name: img.name,
+              type: img.type,
+              format: img.format,
+              mimeType: img.mimeType,
+              scale: img.scale,
+            };
+            // SVG → raw markup (agent reads paths); PNG → base64 image block.
+            if (img.format === "SVG") out.svg = new TextDecoder().decode(img.bytes);
+            else out.base64 = bytesToBase64(img.bytes);
+            return out;
+          });
           selected = new Set(allImages.map((_, i) => i)); // all on by default
 
           renderThumbs();
@@ -409,11 +429,11 @@
       function renderThumbs() {
         thumbsEl.innerHTML = "";
         rawImages.forEach((img, i) => {
-          const blob = new Blob([img.bytes], { type: "image/png" });
+          const blob = new Blob([img.bytes], { type: img.mimeType });
           const url = URL.createObjectURL(blob);
           const wrap = document.createElement("div");
           wrap.className = "thumb" + (selected.has(i) ? " selected" : "");
-          wrap.title = img.name + " · " + img.type + " — click to include/exclude";
+          wrap.title = img.name + " · " + img.type + " · " + img.format + " — click to include/exclude";
           const check = document.createElement("div");
           check.className = "check";
           const el = document.createElement("img");
@@ -438,7 +458,11 @@
         $("selCount").textContent = selected.size + " / " + allImages.length;
         const preview = {
           ...buildPayload(),
-          images: chosen().map((i) => ({ ...i, base64: "<" + i.base64.length + " base64 chars>" })),
+          images: chosen().map((i) =>
+            i.format === "SVG"
+              ? { ...i, svg: "<" + (i.svg ? i.svg.length : 0) + " svg chars>" }
+              : { ...i, base64: "<" + i.base64.length + " base64 chars>" }
+          ),
         };
         if (preview.variableCollections) {
           const varTotal = variableCollections.reduce((n, c) => n + (c.variables ? c.variables.length : 0), 0);
@@ -465,6 +489,7 @@
 
       // Changing a setting re-exports immediately (also persisted sandbox-side).
       minDimEl.onchange = () => post("rerun", opts());
+      svgEl.onchange = () => post("rerun", opts());
 
       $("collAll").onclick = () => {
         selectedColl = new Set(collections.map((c) => c.id));
@@ -496,8 +521,9 @@
       $("dlPng").onclick = () => {
         chosenRaw().forEach((img, i) => {
           // Index-prefix: sibling elements often share a name — avoids clobbering.
-          const fname = String(i + 1).padStart(2, "0") + "-" + slug(img.name) + "@" + img.scale + "x.png";
-          download(fname, new Blob([img.bytes], { type: "image/png" }));
+          const prefix = String(i + 1).padStart(2, "0") + "-" + slug(img.name);
+          const fname = img.format === "SVG" ? prefix + ".svg" : prefix + "@" + img.scale + "x.png";
+          download(fname, new Blob([img.bytes], { type: img.mimeType }));
         });
       };
 
