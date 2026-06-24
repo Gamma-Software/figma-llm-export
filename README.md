@@ -16,9 +16,25 @@ now — copy or download the bundle and feed it to any agent. Wiring a direct
   "page": "Page 1",
   "selectionCount": 2,
   "nodes": [ { "id", "name", "type", "width", "height", "characters", "fills", "layout", … } ],
-  "images": [ { "id", "name", "mimeType": "image/png", "scale": 2, "base64": "iVBORw0K…" } ]
+  "images": [ { "id", "name", "type", "mimeType": "image/png", "scale": 2, "base64": "iVBORw0K…" } ]
 }
 ```
+
+### Per-element crops
+
+Each meaningful element gets its **own** PNG cropped to its bounds (the tree is
+walked recursively), so an agent can look at pieces, not just the whole frame.
+To avoid a flood of useless slivers, child elements are **skipped** when they
+are text/vectors or smaller than a threshold — the layers you explicitly select
+are always exported regardless. Tunable at the top of `src/code.ts`:
+
+| const | default | meaning |
+|-------|---------|---------|
+| `MIN_EXPORT_DIM` | `24` | child elements below this (px, either side) aren't cropped on their own |
+| `SKIP_EXPORT_TYPES` | `TEXT, VECTOR, LINE, SLICE` | types never cropped standalone |
+| `NO_RECURSE_EXPORT` | `INSTANCE` | treated as one atomic block, no crops of internals |
+| `MAX_EXPORTS` | `80` | hard cap per run (`meta.truncated` flags when hit) |
+| `PNG_SCALE` | `2` | export resolution |
 
 The `images[].base64` is drop-in for Anthropic's multimodal content blocks
 (`{"type":"image","source":{"type":"base64","media_type":"image/png","data": …}}`).

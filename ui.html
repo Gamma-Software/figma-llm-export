@@ -210,6 +210,7 @@
           const images = rawImages.map((img) => ({
             id: img.id,
             name: img.name,
+            type: img.type,
             mimeType: "image/png",
             scale: img.scale,
             base64: bytesToBase64(img.bytes),
@@ -236,6 +237,7 @@
             el.src = url;
             const cap = document.createElement("span");
             cap.textContent = img.name;
+            cap.title = img.name + " · " + img.type;
             wrap.appendChild(el);
             wrap.appendChild(cap);
             thumbsEl.appendChild(wrap);
@@ -249,7 +251,9 @@
             2
           );
 
-          statusEl.textContent = msg.meta.selectionCount + " layer(s) · " + rawImages.length + " image(s)";
+          statusEl.textContent =
+            msg.meta.selectionCount + " selected · " + rawImages.length + " crop(s)" +
+            (msg.meta.truncated ? " (capped)" : "");
           setEnabled(true);
         }
       };
@@ -270,9 +274,11 @@
       };
 
       $("dlPng").onclick = () => {
-        for (const img of rawImages) {
-          download(slug(img.name) + "@" + img.scale + "x.png", new Blob([img.bytes], { type: "image/png" }));
-        }
+        rawImages.forEach((img, i) => {
+          // Index-prefix: sibling elements often share a name — avoids clobbering.
+          const fname = String(i + 1).padStart(2, "0") + "-" + slug(img.name) + "@" + img.scale + "x.png";
+          download(fname, new Blob([img.bytes], { type: "image/png" }));
+        });
       };
 
       $("dlBundle").onclick = () => {

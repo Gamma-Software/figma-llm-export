@@ -13,6 +13,18 @@ const PNG_SCALE = 2;
 // agent rarely needs the internal structure of a component instance.
 const NO_RECURSE: ReadonlyArray<string> = ["INSTANCE"];
 
+// Per-element PNG export tuning.
+// Child elements smaller than this (either dimension, px) are not cropped on
+// their own — avoids a flood of useless text/icon slivers. The nodes the user
+// explicitly selected are always exported regardless of size.
+const MIN_EXPORT_DIM = 24;
+// Types never worth a standalone crop (rendered fine inside their parent).
+const SKIP_EXPORT_TYPES: ReadonlyArray<string> = ["TEXT", "VECTOR", "LINE", "SLICE"];
+// Don't crop into these subtrees — treat them as one atomic block.
+const NO_RECURSE_EXPORT: ReadonlyArray<string> = ["INSTANCE"];
+// Hard cap on number of cropped PNGs per run (payload + speed guard).
+const MAX_EXPORTS = 80;
+
 const round = (n: number): number => Math.round(n * 100) / 100;
 const isMixed = (v: unknown): boolean => typeof v === "symbol";
 
@@ -160,17 +172,62 @@ async function serialize(node: BaseNode, depth: number): Promise<SerializedNode>
   return out;
 }
 
-async function exportPng(node: SceneNode): Promise<{ id: string; name: string; scale: number; bytes: Uint8Array } | null> {
+interface ExportedImage {
+  id: string;
+  name: string;
+  type: string;
+  scale: number;
+  bytes: Uint8Array;
+}
+
+async function exportPng(node: SceneNode): Promise<ExportedImage | null> {
   if (typeof (node as ExportMixin).exportAsync !== "function") return null;
   try {
     const bytes = await (node as ExportMixin).exportAsync({
       format: "PNG",
       constraint: { type: "SCALE", value: PNG_SCALE },
     });
-    return { id: node.id, name: node.name, scale: PNG_SCALE, bytes };
+    return { id: node.id, name: node.name, type: node.type, scale: PNG_SCALE, bytes };
   } catch (e) {
     console.warn("PNG export failed for", node.name, e);
     return null;
+  }
+}
+
+// Worth its own cropped PNG? Text/vectors and sub-threshold elements are not —
+// they render fine inside their parent's crop and would just be noise.
+function worthCropping(node: SceneNode): boolean {
+  if (node.visible === false) return false;
+  if (SKIP_EXPORT_TYPES.indexOf(node.type) !== -1) return false;
+  const w = (node as LayoutMixin).width;
+  const h = (node as LayoutMixin).height;
+  return w >= MIN_EXPORT_DIM && h >= MIN_EXPORT_DIM;
+}
+
+// Recursively crop a PNG for each meaningful element. `isRoot` nodes (what the
+// user explicitly selected) are always exported, even text/small ones.
+async function collectExports(
+  node: SceneNode,
+  images: ExportedImage[],
+  depth: number,
+  isRoot: boolean
+): Promise<void> {
+  if (images.length >= MAX_EXPORTS) return;
+
+  if (isRoot || worthCropping(node)) {
+    const img = await exportPng(node);
+    if (img) images.push(img);
+  }
+
+  if (
+    "children" in node &&
+    depth < MAX_DEPTH &&
+    NO_RECURSE_EXPORT.indexOf(node.type) === -1
+  ) {
+    for (const child of (node as ChildrenMixin).children as SceneNode[]) {
+      if (images.length >= MAX_EXPORTS) break;
+      await collectExports(child, images, depth + 1, false);
+    }
   }
 }
 
@@ -184,9 +241,14 @@ async function run(withImages: boolean): Promise<void> {
   figma.ui.postMessage({ type: "working", count: selection.length });
 
   const nodes = await Promise.all(selection.map((s) => serialize(s, 0)));
-  const images = withImages
-    ? (await Promise.all(selection.map(exportPng))).filter(Boolean)
-    : [];
+
+  const images: ExportedImage[] = [];
+  if (withImages) {
+    for (const s of selection) {
+      if (images.length >= MAX_EXPORTS) break;
+      await collectExports(s, images, 0, true);
+    }
+  }
 
   figma.ui.postMessage({
     type: "data",
@@ -194,6 +256,8 @@ async function run(withImages: boolean): Promise<void> {
       file: figma.root.name,
       page: figma.currentPage.name,
       selectionCount: selection.length,
+      imageCount: images.length,
+      truncated: images.length >= MAX_EXPORTS,
     },
     nodes,
     images,
