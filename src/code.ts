@@ -36,26 +36,31 @@ interface SerializedNode {
   children?: SerializedNode[];
 }
 
-function simplifyPaints(paints: unknown): unknown {
+async function simplifyPaints(paints: unknown, node: BaseNode): Promise<unknown> {
   if (isMixed(paints) || !Array.isArray(paints)) return undefined;
-  return paints.map((p: Paint) => {
-    const base: Record<string, unknown> = { type: p.type, visible: p.visible !== false };
-    if (p.opacity !== undefined && p.opacity !== 1) base.opacity = round(p.opacity);
-    if (p.type === "SOLID") {
-      const { r, g, b } = (p as SolidPaint).color;
-      base.color = rgbToHex(r, g, b);
-    } else if (p.type.startsWith("GRADIENT")) {
-      base.stops = (p as GradientPaint).gradientStops.map((s) => ({
-        position: round(s.position),
-        color: rgbToHex(s.color.r, s.color.g, s.color.b),
-        opacity: round(s.color.a),
-      }));
-    } else if (p.type === "IMAGE") {
-      base.imageHash = (p as ImagePaint).imageHash;
-      base.scaleMode = (p as ImagePaint).scaleMode;
-    }
-    return base;
-  });
+  return Promise.all(
+    (paints as Paint[]).map(async (p) => {
+      const base: Record<string, unknown> = { type: p.type, visible: p.visible !== false };
+      if (p.opacity !== undefined && p.opacity !== 1) base.opacity = round(p.opacity);
+      if (p.type === "SOLID") {
+        const { r, g, b } = (p as SolidPaint).color;
+        const hex = rgbToHex(r, g, b);
+        const cb = (p as SolidPaint).boundVariables?.color;
+        // Inline the bound variable on the color itself: { value, variable }.
+        base.color = cb && cb.id ? { value: hex, variable: bindLabel(await resolveVar(cb.id, node)) } : hex;
+      } else if (p.type.startsWith("GRADIENT")) {
+        base.stops = (p as GradientPaint).gradientStops.map((s) => ({
+          position: round(s.position),
+          color: rgbToHex(s.color.r, s.color.g, s.color.b),
+          opacity: round(s.color.a),
+        }));
+      } else if (p.type === "IMAGE") {
+        base.imageHash = (p as ImagePaint).imageHash;
+        base.scaleMode = (p as ImagePaint).scaleMode;
+      }
+      return base;
+    })
+  );
 }
 
 function rgbToHex(r: number, g: number, b: number): string {
@@ -79,29 +84,16 @@ async function resolveCollectionName(id: string): Promise<string | null> {
   return name;
 }
 
-function colorToHex(c: RGBA): string {
-  const h = (v: number) => Math.round(v * 255).toString(16).padStart(2, "0");
-  let s = `#${h(c.r)}${h(c.g)}${h(c.b)}`;
-  if (typeof c.a === "number" && c.a < 1) s += h(c.a); // 8-digit when translucent
-  return s;
-}
-
-function simplifyVarValue(val: VariableValue): unknown {
-  if (val && typeof val === "object") {
-    if ("r" in val && "g" in val && "b" in val) return colorToHex(val as RGBA);
-    if ((val as VariableAlias).type === "VARIABLE_ALIAS") return { aliasOf: (val as VariableAlias).id };
-  }
-  return val;
-}
-
 interface ResolvedVar {
   id: string;
   name: string | null;
   collection: string | null;
-  value?: unknown;
 }
 
-async function resolveVar(id: string, node: BaseNode): Promise<ResolvedVar> {
+// Resolve a variable id to its name + collection. The concrete value is read
+// straight from the node's property (already mode-resolved), so we don't need
+// resolveForConsumer here.
+async function resolveVar(id: string, _node: BaseNode): Promise<ResolvedVar> {
   let v: Variable | null = null;
   try {
     v = await figma.variables.getVariableByIdAsync(id);
@@ -110,42 +102,45 @@ async function resolveVar(id: string, node: BaseNode): Promise<ResolvedVar> {
   }
   if (!v) return { id, name: null, collection: null };
   const collection = await resolveCollectionName(v.variableCollectionId);
-  let value: unknown;
-  try {
-    // Resolve through the node's own mode (and any alias chain) to a concrete value.
-    value = simplifyVarValue(v.resolveForConsumer(node as SceneNode).value);
-  } catch {
-    /* value stays undefined */
-  }
-  return { id, name: v.name, collection, value };
+  return { id, name: v.name, collection };
 }
 
-// Surface bound variables (e.g. cornerRadius -> { name: "radius/md",
-// collection: "Primitives", value: 8 }) so a bound property is distinguishable
-// from a hardcoded one, with enough context to act on.
-async function serializeBoundVariables(
-  node: BaseNode
-): Promise<Record<string, unknown> | undefined> {
+// "Collection/name" label for a resolved variable (name alone if no collection).
+function bindLabel(r: ResolvedVar): string {
+  const name = r.name ?? r.id;
+  return r.collection ? `${r.collection}/${name}` : name;
+}
+
+// Resolve a node's scalar (non-array) variable bindings to labels keyed by the
+// bound field — e.g. { topLeftRadius: "Theme/radius/card-radius" }. Array-valued
+// bindings (fills/strokes) are handled per-paint in simplifyPaints instead.
+async function nodeBindingLabels(node: BaseNode): Promise<Record<string, string>> {
   const bv = (node as unknown as { boundVariables?: Record<string, unknown> }).boundVariables;
-  if (!bv) return undefined;
-  const one = (a: { id: string }) => resolveVar(a.id, node);
-  const out: Record<string, unknown> = {};
+  if (!bv) return {};
+  const out: Record<string, string> = {};
   for (const field of Object.keys(bv)) {
-    const val = bv[field] as { id: string } | { id: string }[];
-    if (Array.isArray(val)) out[field] = await Promise.all(val.filter((a) => a && a.id).map(one));
-    else if (val && val.id) out[field] = await one(val);
+    const val = bv[field] as { id?: string };
+    if (val && !Array.isArray(val) && val.id) {
+      out[field] = bindLabel(await resolveVar(val.id, node));
+    }
   }
-  return Object.keys(out).length ? out : undefined;
+  return out;
 }
 
 async function serialize(node: BaseNode, depth: number): Promise<SerializedNode> {
   const out: SerializedNode = { id: node.id, name: node.name, type: node.type };
   const n = node as unknown as Record<string, unknown>;
 
+  // Variable bindings inlined into each value: a bound property becomes
+  // { value, variable: "Collection/name" }; unbound stays a plain value.
+  const vb = await nodeBindingLabels(node);
+  const bind = (value: unknown, field: string): unknown =>
+    vb[field] ? { value, variable: vb[field] } : value;
+
   if ("visible" in node && (node as SceneNode).visible === false) out.visible = false;
   if ("width" in node) {
-    out.width = round((node as LayoutMixin).width);
-    out.height = round((node as LayoutMixin).height);
+    out.width = bind(round((node as LayoutMixin).width), "width");
+    out.height = bind(round((node as LayoutMixin).height), "height");
   }
   if ("x" in node) {
     out.x = round((node as LayoutMixin).x);
@@ -155,19 +150,21 @@ async function serialize(node: BaseNode, depth: number): Promise<SerializedNode>
     out.rotation = round((node as LayoutMixin).rotation);
   }
   if ("opacity" in node && (node as BlendMixin & { opacity: number }).opacity !== 1) {
-    out.opacity = round((node as unknown as { opacity: number }).opacity);
+    out.opacity = bind(round((node as unknown as { opacity: number }).opacity), "opacity");
   }
   if ("cornerRadius" in node) {
     if (!isMixed(n.cornerRadius)) {
-      if ((n.cornerRadius as number) > 0) out.cornerRadius = n.cornerRadius;
+      if ((n.cornerRadius as number) > 0 || vb.cornerRadius) {
+        out.cornerRadius = bind(n.cornerRadius, "cornerRadius");
+      }
     } else {
       // Mixed corners: figma.mixed isn't serializable, so expand the per-corner
-      // radii (each is a plain number) instead of dropping the field.
+      // radii — each wrapped with its own binding when bound.
       out.cornerRadius = {
-        topLeft: n.topLeftRadius,
-        topRight: n.topRightRadius,
-        bottomRight: n.bottomRightRadius,
-        bottomLeft: n.bottomLeftRadius,
+        topLeft: bind(n.topLeftRadius, "topLeftRadius"),
+        topRight: bind(n.topRightRadius, "topRightRadius"),
+        bottomRight: bind(n.bottomRightRadius, "bottomRightRadius"),
+        bottomLeft: bind(n.bottomLeftRadius, "bottomLeftRadius"),
       };
     }
   }
@@ -177,39 +174,41 @@ async function serialize(node: BaseNode, depth: number): Promise<SerializedNode>
     const t = node as TextNode;
     out.characters = t.characters;
     out.textAlignHorizontal = t.textAlignHorizontal;
-    if (!isMixed(t.fontSize)) out.fontSize = t.fontSize;
+    if (!isMixed(t.fontSize)) out.fontSize = bind(t.fontSize, "fontSize");
     if (!isMixed(t.fontName)) out.fontName = t.fontName;
     // Per-range styling: when any of these is mixed across the string, a single
     // value would be lost — capture the styled segments instead of dropping it.
     if (isMixed(t.fontSize) || isMixed(t.fontName) || isMixed(t.fills as unknown)) {
       const fields: ("fontSize" | "fontName" | "fills")[] = ["fontSize", "fontName", "fills"];
-      out.segments = t.getStyledTextSegments(fields).map((s) => ({
-        text: s.characters,
-        start: s.start,
-        end: s.end,
-        fontSize: s.fontSize,
-        fontName: s.fontName,
-        fills: simplifyPaints(s.fills),
-      }));
+      out.segments = await Promise.all(
+        t.getStyledTextSegments(fields).map(async (s) => ({
+          text: s.characters,
+          start: s.start,
+          end: s.end,
+          fontSize: s.fontSize,
+          fontName: s.fontName,
+          fills: await simplifyPaints(s.fills, node),
+        }))
+      );
     }
   }
 
-  // Paint
+  // Paint (per-paint color bindings are inlined inside simplifyPaints)
   if ("fills" in node) {
-    const fills = simplifyPaints((node as GeometryMixin).fills);
+    const fills = await simplifyPaints((node as GeometryMixin).fills, node);
     if (fills) out.fills = fills;
   }
   if ("strokes" in node && Array.isArray((node as GeometryMixin).strokes) && (node as GeometryMixin).strokes.length) {
-    out.strokes = simplifyPaints((node as GeometryMixin).strokes);
+    out.strokes = await simplifyPaints((node as GeometryMixin).strokes, node);
     if (!isMixed(n.strokeWeight)) {
-      out.strokeWeight = n.strokeWeight;
+      out.strokeWeight = bind(n.strokeWeight, "strokeWeight");
     } else if ("strokeTopWeight" in node) {
-      // Mixed per-side weights — expand instead of dropping.
+      // Mixed per-side weights — expand, each wrapped with its own binding.
       out.strokeWeight = {
-        top: n.strokeTopWeight,
-        right: n.strokeRightWeight,
-        bottom: n.strokeBottomWeight,
-        left: n.strokeLeftWeight,
+        top: bind(n.strokeTopWeight, "strokeTopWeight"),
+        right: bind(n.strokeRightWeight, "strokeRightWeight"),
+        bottom: bind(n.strokeBottomWeight, "strokeBottomWeight"),
+        left: bind(n.strokeLeftWeight, "strokeLeftWeight"),
       };
     }
   }
@@ -219,8 +218,13 @@ async function serialize(node: BaseNode, depth: number): Promise<SerializedNode>
     const f = node as FrameNode;
     out.layout = {
       mode: f.layoutMode,
-      itemSpacing: f.itemSpacing,
-      padding: [f.paddingTop, f.paddingRight, f.paddingBottom, f.paddingLeft],
+      itemSpacing: bind(f.itemSpacing, "itemSpacing"),
+      padding: [
+        bind(f.paddingTop, "paddingTop"),
+        bind(f.paddingRight, "paddingRight"),
+        bind(f.paddingBottom, "paddingBottom"),
+        bind(f.paddingLeft, "paddingLeft"),
+      ],
       primaryAxisAlignItems: f.primaryAxisAlignItems,
       counterAxisAlignItems: f.counterAxisAlignItems,
     };
@@ -234,10 +238,6 @@ async function serialize(node: BaseNode, depth: number): Promise<SerializedNode>
       /* ignore */
     }
   }
-
-  // Bound variables (cornerRadius, padding, fills, strokeWeight, …)
-  const bound = await serializeBoundVariables(node);
-  if (bound) out.boundVariables = bound;
 
   // Children
   if ("children" in node && depth < MAX_DEPTH && NO_RECURSE.indexOf(node.type) === -1) {

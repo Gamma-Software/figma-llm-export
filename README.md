@@ -43,17 +43,22 @@ the layers you explicitly selected, which always export.
 The `images[].base64` is drop-in for Anthropic's multimodal content blocks
 (`{"type":"image","source":{"type":"base64","media_type":"image/png","data": …}}`).
 
-### Bound variables
+### Bound variables (inlined)
 
-When a property is bound to a Figma variable, the node carries a
-`boundVariables` map resolving each binding to its name, **collection**, and
-**value** (resolved through the node's own mode; colors as hex):
+Variable bindings are inlined **on the value itself**. An unbound property is a
+plain value; a bound one becomes `{ value, variable: "Collection/name" }`. This
+covers radii (incl. per-corner), colors (fills/strokes), stroke weights,
+padding, item spacing, opacity, size, and fontSize:
 
 ```jsonc
-"boundVariables": {
-  "cornerRadius": { "id": "VariableID:…", "name": "radius/md", "collection": "Primitives", "value": 8 },
-  "fills":        [ { "id": "VariableID:…", "name": "bg/surface", "collection": "Semantic", "value": "#141414" } ]
-}
+"cornerRadius": {
+  "topLeft":     { "value": 12, "variable": "Theme/radius/card-radius" },
+  "topRight":    { "value": 12, "variable": "Theme/radius/card-radius" },
+  "bottomRight": 0,
+  "bottomLeft":  0
+},
+"fills": [ { "type": "SOLID", "visible": true,
+            "color": { "value": "#181818", "variable": "Theme/card-background" } } ]
 ```
 
 ## Develop
