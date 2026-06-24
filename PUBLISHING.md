@@ -43,8 +43,8 @@ the Community and anyone can install it in one click.
 
 ## Notes / gotchas
 
-- The manifest `id` (`myra-llm-export`) is a dev placeholder; Figma assigns the
-  real plugin id on first publish — don't worry about it.
+- The manifest `id` (`1651748881582724773`) is the real Figma-assigned plugin
+  id — keep it; it ties local releases to the published plugin.
 - `networkAccess` is currently `"none"` → fast, low-friction review.
   **If you later add "send to an agent"** (a network call), you must whitelist
   the domain in `manifest.json` and the plugin needs **another review**.
