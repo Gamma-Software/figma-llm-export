@@ -1,0 +1,62 @@
+# LLM Export — Figma plugin
+
+Extracts the **current selection** from a Figma file into an **LLM-ready
+payload**: compact node JSON (geometry, text, fills, strokes, auto-layout,
+component props) **plus a rendered PNG** of each selected layer. Export-only for
+now — copy or download the bundle and feed it to any agent. Wiring a direct
+"send to agent" call is one handler away (see [Sending to an LLM](#sending-to-an-llm-later)).
+
+## Payload shape
+
+```jsonc
+{
+  "source": "figma",
+  "exportedAt": "2026-06-24T…Z",
+  "file": "My File",
+  "page": "Page 1",
+  "selectionCount": 2,
+  "nodes": [ { "id", "name", "type", "width", "height", "characters", "fills", "layout", … } ],
+  "images": [ { "id", "name", "mimeType": "image/png", "scale": 2, "base64": "iVBORw0K…" } ]
+}
+```
+
+The `images[].base64` is drop-in for Anthropic's multimodal content blocks
+(`{"type":"image","source":{"type":"base64","media_type":"image/png","data": …}}`).
+
+## Develop
+
+```bash
+npm install
+npm run build      # bundles src/code.ts -> code.js (esbuild)
+npm run watch      # rebuild on change
+npm run typecheck  # tsc --noEmit
+```
+
+`code.js` is generated (gitignored) — run `npm run build` before loading.
+
+## Load in Figma
+
+1. Figma desktop → **Plugins → Development → Import plugin from manifest…**
+2. Pick `manifest.json` in this repo.
+3. Select layers → **Plugins → Development → LLM Export**.
+
+## Buttons
+
+| Button | Does |
+|--------|------|
+| ↻ Refresh selection | Re-reads the selection and re-renders PNGs |
+| Copy payload | Full JSON (incl. base64 images) → clipboard |
+| Download JSON | Node tree only, images as metadata (no base64) |
+| Download PNG(s) | Each selected layer as a `@2x` PNG file |
+| Download LLM bundle | Full payload incl. base64 PNGs (one file) |
+
+## Sending to an LLM later
+
+Currently `networkAccess` is `"none"`. To POST the payload from the plugin:
+
+1. In `manifest.json`, replace `"none"` with the agent domain, e.g.
+   `"allowedDomains": ["https://api.anthropic.com"]`.
+2. In `ui.html`, add a button that `fetch`es that endpoint with the `payload`
+   object (the UI iframe is a real browser context with `fetch`).
+
+Network calls must run in the **UI iframe**, not the sandbox (`code.ts`).

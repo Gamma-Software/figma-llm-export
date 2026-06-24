@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      :root {
+        --bg: var(--figma-color-bg, #fff);
+        --fg: var(--figma-color-text, #1e1e1e);
+        --muted: var(--figma-color-text-secondary, #6b6b6b);
+        --border: var(--figma-color-border, #e6e6e6);
+        --accent: var(--figma-color-bg-brand, #0d99ff);
+        --accent-fg: var(--figma-color-text-onbrand, #fff);
+        --surface: var(--figma-color-bg-secondary, #f5f5f5);
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font: 12px/1.45 "Inter", -apple-system, system-ui, sans-serif;
+        color: var(--fg);
+        background: var(--bg);
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+      }
+      header {
+        padding: 12px 14px;
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+      header h1 { font-size: 13px; margin: 0; font-weight: 600; }
+      #status { color: var(--muted); font-size: 11px; }
+      main { flex: 1; overflow-y: auto; padding: 12px 14px; }
+      .section-label {
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: var(--muted);
+        margin: 0 0 6px;
+      }
+      #thumbs {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-bottom: 14px;
+      }
+      #thumbs:empty { display: none; }
+      .thumb {
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 4px;
+        background: var(--surface);
+        max-width: 120px;
+      }
+      .thumb img { display: block; max-width: 110px; max-height: 90px; border-radius: 3px; }
+      .thumb span {
+        display: block;
+        font-size: 10px;
+        color: var(--muted);
+        margin-top: 3px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        max-width: 110px;
+      }
+      pre {
+        margin: 0;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 10px;
+        font: 11px/1.4 ui-monospace, "SF Mono", Menlo, monospace;
+        white-space: pre-wrap;
+        word-break: break-word;
+        max-height: 320px;
+        overflow: auto;
+      }
+      footer {
+        border-top: 1px solid var(--border);
+        padding: 10px 14px;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
+      button {
+        font: inherit;
+        font-weight: 500;
+        padding: 8px 10px;
+        border-radius: 6px;
+        border: 1px solid var(--border);
+        background: var(--bg);
+        color: var(--fg);
+        cursor: pointer;
+      }
+      button:hover { background: var(--surface); }
+      button.primary { background: var(--accent); color: var(--accent-fg); border-color: transparent; grid-column: 1 / -1; }
+      button:disabled { opacity: 0.45; cursor: default; }
+      .empty { color: var(--muted); text-align: center; padding: 40px 12px; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>LLM Export</h1>
+      <span id="status">…</span>
+    </header>
+    <main>
+      <div id="empty" class="empty">Select one or more layers, then hit <b>Refresh</b>.</div>
+      <div id="content" hidden>
+        <p class="section-label">Rendered PNG(s)</p>
+        <div id="thumbs"></div>
+        <p class="section-label">Payload</p>
+        <pre id="json"></pre>
+      </div>
+    </main>
+    <footer>
+      <button id="refresh">↻ Refresh selection</button>
+      <button id="copy" disabled>Copy payload</button>
+      <button id="dlJson" disabled>Download JSON</button>
+      <button id="dlPng" disabled>Download PNG(s)</button>
+      <button id="dlBundle" class="primary" disabled>Download LLM bundle (JSON + base64 PNG)</button>
+    </footer>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+      const statusEl = $("status");
+      const emptyEl = $("empty");
+      const contentEl = $("content");
+      const thumbsEl = $("thumbs");
+      const jsonEl = $("json");
+
+      // Holds the latest export so the footer buttons can act on it.
+      let payload = null;   // { source, exportedAt, file, page, selectionCount, nodes, images:[{id,name,mimeType,scale,base64}] }
+      let rawImages = [];   // [{ id, name, scale, bytes:Uint8Array }]
+
+      const post = (type, extra) => parent.postMessage({ pluginMessage: { type, ...extra } }, "*");
+
+      function bytesToBase64(bytes) {
+        let bin = "";
+        const chunk = 0x8000;
+        for (let i = 0; i < bytes.length; i += chunk) {
+          bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+        }
+        return btoa(bin);
+      }
+
+      function download(filename, blob) {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }
+
+      function slug(s) {
+        return (s || "figma").replace(/[^a-z0-9-_]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase() || "figma";
+      }
+
+      async function copyText(text) {
+        try {
+          await navigator.clipboard.writeText(text);
+        } catch {
+          const ta = document.createElement("textarea");
+          ta.value = text;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand("copy");
+          ta.remove();
+        }
+      }
+
+      function setEnabled(on) {
+        for (const id of ["copy", "dlJson", "dlPng", "dlBundle"]) $(id).disabled = !on;
+      }
+
+      onmessage = (event) => {
+        const msg = event.data.pluginMessage;
+        if (!msg) return;
+
+        if (msg.type === "empty") {
+          payload = null;
+          rawImages = [];
+          contentEl.hidden = true;
+          emptyEl.hidden = false;
+          statusEl.textContent = "nothing selected";
+          setEnabled(false);
+          return;
+        }
+
+        if (msg.type === "working") {
+          statusEl.textContent = "rendering " + msg.count + " layer(s)…";
+          return;
+        }
+
+        if (msg.type === "hint") {
+          // Light live feedback only; data is rebuilt on Refresh.
+          if (!payload) statusEl.textContent = msg.count ? msg.count + " selected — Refresh" : "nothing selected";
+          return;
+        }
+
+        if (msg.type === "data") {
+          emptyEl.hidden = true;
+          contentEl.hidden = false;
+
+          rawImages = msg.images || [];
+          const images = rawImages.map((img) => ({
+            id: img.id,
+            name: img.name,
+            mimeType: "image/png",
+            scale: img.scale,
+            base64: bytesToBase64(img.bytes),
+          }));
+
+          payload = {
+            source: "figma",
+            exportedAt: new Date().toISOString(),
+            file: msg.meta.file,
+            page: msg.meta.page,
+            selectionCount: msg.meta.selectionCount,
+            nodes: msg.nodes,
+            images,
+          };
+
+          // Thumbnails
+          thumbsEl.innerHTML = "";
+          for (const img of rawImages) {
+            const blob = new Blob([img.bytes], { type: "image/png" });
+            const url = URL.createObjectURL(blob);
+            const wrap = document.createElement("div");
+            wrap.className = "thumb";
+            const el = document.createElement("img");
+            el.src = url;
+            const cap = document.createElement("span");
+            cap.textContent = img.name;
+            wrap.appendChild(el);
+            wrap.appendChild(cap);
+            thumbsEl.appendChild(wrap);
+          }
+
+          // JSON preview — node tree only (images shown as thumbnails above; the
+          // base64 blobs live in the downloadable bundle, not the preview).
+          jsonEl.textContent = JSON.stringify(
+            { ...payload, images: images.map((i) => ({ ...i, base64: "<" + i.base64.length + " base64 chars>" })) },
+            null,
+            2
+          );
+
+          statusEl.textContent = msg.meta.selectionCount + " layer(s) · " + rawImages.length + " image(s)";
+          setEnabled(true);
+        }
+      };
+
+      // --- footer actions ---
+      $("refresh").onclick = () => post("rerun");
+
+      $("copy").onclick = async () => {
+        if (!payload) return;
+        await copyText(JSON.stringify(payload, null, 2));
+        post("notify", { text: "Payload copied to clipboard" });
+      };
+
+      $("dlJson").onclick = () => {
+        if (!payload) return;
+        const nodesOnly = { ...payload, images: payload.images.map(({ base64, ...rest }) => rest) };
+        download(slug(payload.file) + "-nodes.json", new Blob([JSON.stringify(nodesOnly, null, 2)], { type: "application/json" }));
+      };
+
+      $("dlPng").onclick = () => {
+        for (const img of rawImages) {
+          download(slug(img.name) + "@" + img.scale + "x.png", new Blob([img.bytes], { type: "image/png" }));
+        }
+      };
+
+      $("dlBundle").onclick = () => {
+        if (!payload) return;
+        download(slug(payload.file) + "-llm-bundle.json", new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }));
+      };
+    </script>
+  </body>
+</html>

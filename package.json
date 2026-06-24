@@ -1,0 +1,16 @@
+{
+  "name": "figma-llm-export",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Figma plugin: extract the current selection (node JSON + rendered PNG) into an LLM-ready payload.",
+  "scripts": {
+    "build": "esbuild src/code.ts --bundle --target=es2018 --outfile=code.js",
+    "watch": "npm run build -- --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@figma/plugin-typings": "^1.100.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.6.0"
+  }
+}
