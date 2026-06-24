@@ -51,7 +51,40 @@ function rgbToHex(r: number, g: number, b: number): string {
   return `#${h(r)}${h(g)}${h(b)}`;
 }
 
-function serialize(node: BaseNode, depth: number): SerializedNode {
+// id -> variable name, deduped across the whole selection.
+const varNameCache = new Map<string, string | null>();
+async function resolveVarName(id: string): Promise<string | null> {
+  const hit = varNameCache.get(id);
+  if (hit !== undefined) return hit;
+  let name: string | null = null;
+  try {
+    const v = await figma.variables.getVariableByIdAsync(id);
+    name = v ? v.name : null;
+  } catch {
+    name = null;
+  }
+  varNameCache.set(id, name);
+  return name;
+}
+
+// Surface bound variables (e.g. cornerRadius -> "radius/md") next to their
+// resolved values, so a bound property is distinguishable from a hardcoded one.
+async function serializeBoundVariables(
+  node: BaseNode
+): Promise<Record<string, unknown> | undefined> {
+  const bv = (node as unknown as { boundVariables?: Record<string, unknown> }).boundVariables;
+  if (!bv) return undefined;
+  const alias = async (a: { id: string }) => ({ id: a.id, name: await resolveVarName(a.id) });
+  const out: Record<string, unknown> = {};
+  for (const field of Object.keys(bv)) {
+    const val = bv[field] as { id: string } | { id: string }[];
+    if (Array.isArray(val)) out[field] = await Promise.all(val.filter((a) => a && a.id).map(alias));
+    else if (val && val.id) out[field] = await alias(val);
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+async function serialize(node: BaseNode, depth: number): Promise<SerializedNode> {
   const out: SerializedNode = { id: node.id, name: node.name, type: node.type };
   const n = node as unknown as Record<string, unknown>;
 
@@ -114,10 +147,14 @@ function serialize(node: BaseNode, depth: number): SerializedNode {
     }
   }
 
+  // Bound variables (cornerRadius, padding, fills, strokeWeight, …)
+  const bound = await serializeBoundVariables(node);
+  if (bound) out.boundVariables = bound;
+
   // Children
   if ("children" in node && depth < MAX_DEPTH && NO_RECURSE.indexOf(node.type) === -1) {
     const kids = (node as ChildrenMixin).children;
-    if (kids.length) out.children = kids.map((c) => serialize(c, depth + 1));
+    if (kids.length) out.children = await Promise.all(kids.map((c) => serialize(c, depth + 1)));
   }
 
   return out;
@@ -146,7 +183,7 @@ async function run(withImages: boolean): Promise<void> {
 
   figma.ui.postMessage({ type: "working", count: selection.length });
 
-  const nodes = selection.map((s) => serialize(s, 0));
+  const nodes = await Promise.all(selection.map((s) => serialize(s, 0)));
   const images = withImages
     ? (await Promise.all(selection.map(exportPng))).filter(Boolean)
     : [];
