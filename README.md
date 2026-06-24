@@ -43,6 +43,19 @@ the layers you explicitly selected, which always export.
 The `images[].base64` is drop-in for Anthropic's multimodal content blocks
 (`{"type":"image","source":{"type":"base64","media_type":"image/png","data": …}}`).
 
+### Bound variables
+
+When a property is bound to a Figma variable, the node carries a
+`boundVariables` map resolving each binding to its name, **collection**, and
+**value** (resolved through the node's own mode; colors as hex):
+
+```jsonc
+"boundVariables": {
+  "cornerRadius": { "id": "VariableID:…", "name": "radius/md", "collection": "Primitives", "value": 8 },
+  "fills":        [ { "id": "VariableID:…", "name": "bg/surface", "collection": "Semantic", "value": "#141414" } ]
+}
+```
+
 ## Develop
 
 ```bash

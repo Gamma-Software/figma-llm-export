@@ -63,35 +63,77 @@ function rgbToHex(r: number, g: number, b: number): string {
   return `#${h(r)}${h(g)}${h(b)}`;
 }
 
-// id -> variable name, deduped across the whole selection.
-const varNameCache = new Map<string, string | null>();
-async function resolveVarName(id: string): Promise<string | null> {
-  const hit = varNameCache.get(id);
+// Collection name per id, deduped across the whole selection.
+const collectionNameCache = new Map<string, string | null>();
+async function resolveCollectionName(id: string): Promise<string | null> {
+  const hit = collectionNameCache.get(id);
   if (hit !== undefined) return hit;
   let name: string | null = null;
   try {
-    const v = await figma.variables.getVariableByIdAsync(id);
-    name = v ? v.name : null;
+    const col = await figma.variables.getVariableCollectionByIdAsync(id);
+    name = col ? col.name : null;
   } catch {
     name = null;
   }
-  varNameCache.set(id, name);
+  collectionNameCache.set(id, name);
   return name;
 }
 
-// Surface bound variables (e.g. cornerRadius -> "radius/md") next to their
-// resolved values, so a bound property is distinguishable from a hardcoded one.
+function colorToHex(c: RGBA): string {
+  const h = (v: number) => Math.round(v * 255).toString(16).padStart(2, "0");
+  let s = `#${h(c.r)}${h(c.g)}${h(c.b)}`;
+  if (typeof c.a === "number" && c.a < 1) s += h(c.a); // 8-digit when translucent
+  return s;
+}
+
+function simplifyVarValue(val: VariableValue): unknown {
+  if (val && typeof val === "object") {
+    if ("r" in val && "g" in val && "b" in val) return colorToHex(val as RGBA);
+    if ((val as VariableAlias).type === "VARIABLE_ALIAS") return { aliasOf: (val as VariableAlias).id };
+  }
+  return val;
+}
+
+interface ResolvedVar {
+  id: string;
+  name: string | null;
+  collection: string | null;
+  value?: unknown;
+}
+
+async function resolveVar(id: string, node: BaseNode): Promise<ResolvedVar> {
+  let v: Variable | null = null;
+  try {
+    v = await figma.variables.getVariableByIdAsync(id);
+  } catch {
+    v = null;
+  }
+  if (!v) return { id, name: null, collection: null };
+  const collection = await resolveCollectionName(v.variableCollectionId);
+  let value: unknown;
+  try {
+    // Resolve through the node's own mode (and any alias chain) to a concrete value.
+    value = simplifyVarValue(v.resolveForConsumer(node as SceneNode).value);
+  } catch {
+    /* value stays undefined */
+  }
+  return { id, name: v.name, collection, value };
+}
+
+// Surface bound variables (e.g. cornerRadius -> { name: "radius/md",
+// collection: "Primitives", value: 8 }) so a bound property is distinguishable
+// from a hardcoded one, with enough context to act on.
 async function serializeBoundVariables(
   node: BaseNode
 ): Promise<Record<string, unknown> | undefined> {
   const bv = (node as unknown as { boundVariables?: Record<string, unknown> }).boundVariables;
   if (!bv) return undefined;
-  const alias = async (a: { id: string }) => ({ id: a.id, name: await resolveVarName(a.id) });
+  const one = (a: { id: string }) => resolveVar(a.id, node);
   const out: Record<string, unknown> = {};
   for (const field of Object.keys(bv)) {
     const val = bv[field] as { id: string } | { id: string }[];
-    if (Array.isArray(val)) out[field] = await Promise.all(val.filter((a) => a && a.id).map(alias));
-    else if (val && val.id) out[field] = await alias(val);
+    if (Array.isArray(val)) out[field] = await Promise.all(val.filter((a) => a && a.id).map(one));
+    else if (val && val.id) out[field] = await one(val);
   }
   return Object.keys(out).length ? out : undefined;
 }
