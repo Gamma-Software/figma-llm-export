@@ -356,8 +356,12 @@ async function serialize(node: BaseNode, depth: number): Promise<SerializedNode>
   }
   if ("cornerRadius" in node) {
     if (!isMixed(n.cornerRadius)) {
-      if ((n.cornerRadius as number) > 0 || vb.cornerRadius) {
-        out.cornerRadius = bind(n.cornerRadius, "cornerRadius");
+      // Uniform radius. A bound uniform radius lives under the per-corner fields
+      // (topLeftRadius…), not "cornerRadius", so check both to not miss it.
+      const cornerVar =
+        vb.cornerRadius || vb.topLeftRadius || vb.topRightRadius || vb.bottomRightRadius || vb.bottomLeftRadius;
+      if ((n.cornerRadius as number) > 0 || cornerVar) {
+        out.cornerRadius = cornerVar ? { value: n.cornerRadius, variable: cornerVar } : n.cornerRadius;
       }
     } else {
       // Mixed corners: figma.mixed isn't serializable, so expand the per-corner
