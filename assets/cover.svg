@@ -1,0 +1,54 @@
+<svg width="1920" height="960" viewBox="0 0 1920 960" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#161616"/>
+      <stop offset="1" stop-color="#0b0b0b"/>
+    </linearGradient>
+    <linearGradient id="spark" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0d99ff"/>
+      <stop offset="1" stop-color="#7b61ff"/>
+    </linearGradient>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1f1f1f"/>
+      <stop offset="1" stop-color="#161616"/>
+    </linearGradient>
+  </defs>
+  <rect width="1920" height="960" fill="url(#bg)"/>
+  <!-- soft glow -->
+  <circle cx="1450" cy="300" r="420" fill="#0d99ff" opacity="0.10"/>
+  <circle cx="1250" cy="720" r="360" fill="#7b61ff" opacity="0.10"/>
+
+  <!-- left: brand mark + title -->
+  <g transform="translate(150 300)">
+    <rect x="0" y="0" width="150" height="150" rx="36" fill="#141414" stroke="#2a2a2a" stroke-width="2"/>
+    <g transform="translate(11 11) scale(1.15)" fill="none" stroke="#f5f5f3" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M46 34 C 36 34, 39 57, 29 64 C 39 71, 36 94, 46 94"/>
+      <path d="M82 34 C 92 34, 89 57, 99 64 C 89 71, 92 94, 82 94"/>
+    </g>
+    <path transform="translate(11 11) scale(1.15)" d="M64 38 C 66 53, 75 62, 90 64 C 75 66, 66 75, 64 90 C 62 75, 53 66, 38 64 C 53 62, 62 53, 64 38 Z" fill="url(#spark)"/>
+  </g>
+
+  <text x="150" y="560" font-family="Inter, Helvetica, Arial, sans-serif" font-size="96" font-weight="800" fill="#f5f5f3">LLM Export</text>
+  <text x="152" y="630" font-family="Inter, Helvetica, Arial, sans-serif" font-size="34" font-weight="500" fill="#9a9a9a">Turn a Figma selection into an LLM-ready payload</text>
+  <text x="152" y="690" font-family="Inter, Helvetica, Arial, sans-serif" font-size="30" font-weight="400" fill="#6f6f6f">Nodes · variables · cropped PNG &amp; SVG — one JSON for your AI agent</text>
+
+  <!-- right: faux payload card -->
+  <g transform="translate(1140 250)">
+    <rect x="0" y="0" width="620" height="470" rx="20" fill="url(#tile)" stroke="#2c2c2c" stroke-width="2"/>
+    <circle cx="32" cy="34" r="7" fill="#ff5f57"/>
+    <circle cx="58" cy="34" r="7" fill="#febc2e"/>
+    <circle cx="84" cy="34" r="7" fill="#28c840"/>
+    <text x="540" y="40" font-family="Inter, Arial, sans-serif" font-size="20" fill="#6f6f6f" text-anchor="end">payload.json</text>
+    <g font-family="ui-monospace, Menlo, monospace" font-size="23">
+      <text x="36" y="100" fill="#7b61ff">"nodes"<tspan fill="#6f6f6f">: [ … ],</tspan></text>
+      <text x="36" y="146" fill="#7b61ff">"variables"<tspan fill="#6f6f6f">: [</tspan></text>
+      <text x="72" y="186" fill="#9a9a9a">{ <tspan fill="#0d99ff">"name"</tspan>: "radius/card",</text>
+      <text x="96" y="222" fill="#9a9a9a"><tspan fill="#0d99ff">"value"</tspan>: <tspan fill="#28c840">12</tspan> }</text>
+      <text x="36" y="262" fill="#6f6f6f">],</text>
+      <text x="36" y="308" fill="#7b61ff">"images"<tspan fill="#6f6f6f">: [</tspan></text>
+      <text x="72" y="348" fill="#9a9a9a">{ <tspan fill="#0d99ff">"format"</tspan>: "SVG", … },</text>
+      <text x="72" y="384" fill="#9a9a9a">{ <tspan fill="#0d99ff">"format"</tspan>: "PNG", … }</text>
+      <text x="36" y="424" fill="#6f6f6f">]</text>
+    </g>
+  </g>
+</svg>
