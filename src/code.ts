@@ -176,9 +176,22 @@ async function serialize(node: BaseNode, depth: number): Promise<SerializedNode>
   if (node.type === "TEXT") {
     const t = node as TextNode;
     out.characters = t.characters;
+    out.textAlignHorizontal = t.textAlignHorizontal;
     if (!isMixed(t.fontSize)) out.fontSize = t.fontSize;
     if (!isMixed(t.fontName)) out.fontName = t.fontName;
-    out.textAlignHorizontal = t.textAlignHorizontal;
+    // Per-range styling: when any of these is mixed across the string, a single
+    // value would be lost — capture the styled segments instead of dropping it.
+    if (isMixed(t.fontSize) || isMixed(t.fontName) || isMixed(t.fills as unknown)) {
+      const fields: ("fontSize" | "fontName" | "fills")[] = ["fontSize", "fontName", "fills"];
+      out.segments = t.getStyledTextSegments(fields).map((s) => ({
+        text: s.characters,
+        start: s.start,
+        end: s.end,
+        fontSize: s.fontSize,
+        fontName: s.fontName,
+        fills: simplifyPaints(s.fills),
+      }));
+    }
   }
 
   // Paint
@@ -188,7 +201,17 @@ async function serialize(node: BaseNode, depth: number): Promise<SerializedNode>
   }
   if ("strokes" in node && Array.isArray((node as GeometryMixin).strokes) && (node as GeometryMixin).strokes.length) {
     out.strokes = simplifyPaints((node as GeometryMixin).strokes);
-    if (!isMixed(n.strokeWeight)) out.strokeWeight = n.strokeWeight;
+    if (!isMixed(n.strokeWeight)) {
+      out.strokeWeight = n.strokeWeight;
+    } else if ("strokeTopWeight" in node) {
+      // Mixed per-side weights — expand instead of dropping.
+      out.strokeWeight = {
+        top: n.strokeTopWeight,
+        right: n.strokeRightWeight,
+        bottom: n.strokeBottomWeight,
+        left: n.strokeLeftWeight,
+      };
+    }
   }
 
   // Auto-layout
