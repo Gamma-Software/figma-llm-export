@@ -255,8 +255,25 @@ function fullVariable(v: Variable, byId: Map<string, Variable>): unknown {
   };
 }
 
-// Every local variable collection in the file, fully serialized.
-async function buildVariableCollections(): Promise<unknown[]> {
+// Lightweight list of local collections for the UI picker.
+interface CollectionMeta {
+  id: string;
+  name: string;
+  variableCount: number;
+}
+async function listCollections(): Promise<CollectionMeta[]> {
+  const [cols, vars] = await Promise.all([
+    figma.variables.getLocalVariableCollectionsAsync(),
+    figma.variables.getLocalVariablesAsync(),
+  ]);
+  const counts: Record<string, number> = {};
+  for (const v of vars) counts[v.variableCollectionId] = (counts[v.variableCollectionId] || 0) + 1;
+  return cols.map((c) => ({ id: c.id, name: c.name, variableCount: counts[c.id] || 0 }));
+}
+
+// Fully serialize the selected local variable collections (by id).
+async function buildVariableCollections(ids: Set<string>): Promise<unknown[]> {
+  if (!ids.size) return [];
   const [cols, vars] = await Promise.all([
     figma.variables.getLocalVariableCollectionsAsync(),
     figma.variables.getLocalVariablesAsync(),
@@ -268,17 +285,19 @@ async function buildVariableCollections(): Promise<unknown[]> {
     arr.push(v);
     byCol.set(v.variableCollectionId, arr);
   }
-  return cols.map((c) => {
-    const modes: Record<string, string> = {};
-    for (const m of c.modes) modes[m.modeId] = m.name;
-    return {
-      id: c.id,
-      name: c.name,
-      modes,
-      variableIds: c.variableIds,
-      variables: (byCol.get(c.id) || []).map((v) => fullVariable(v, byId)),
-    };
-  });
+  return cols
+    .filter((c) => ids.has(c.id))
+    .map((c) => {
+      const modes: Record<string, string> = {};
+      for (const m of c.modes) modes[m.modeId] = m.name;
+      return {
+        id: c.id,
+        name: c.name,
+        modes,
+        variableIds: c.variableIds,
+        variables: (byCol.get(c.id) || []).map((v) => fullVariable(v, byId)),
+      };
+    });
 }
 
 async function serialize(node: BaseNode, depth: number): Promise<SerializedNode> {
@@ -462,7 +481,7 @@ async function collectExports(
   }
 }
 
-async function run(withImages: boolean, minDim: number, allVars: boolean): Promise<void> {
+async function run(withImages: boolean, minDim: number, collectionIds: string[]): Promise<void> {
   const selection = figma.currentPage.selection;
   if (!selection.length) {
     figma.ui.postMessage({ type: "empty" });
@@ -475,8 +494,10 @@ async function run(withImages: boolean, minDim: number, allVars: boolean): Promi
   const nodes = await Promise.all(selection.map((s) => serialize(s, 0)));
   // Every variable touched by the selection (+ alias targets), fully defined.
   const variables = await buildVariableDefs(usedVarIds);
-  // Full local-variable dump (all collections), only when requested.
-  const variableCollections = allVars ? await buildVariableCollections() : null;
+  // Full dump of the picked collections (empty pick -> none).
+  const picked = new Set(collectionIds);
+  const variableCollections = picked.size ? await buildVariableCollections(picked) : null;
+  const collections = await listCollections();
 
   const images: ExportedImage[] = [];
   if (withImages) {
@@ -497,6 +518,7 @@ async function run(withImages: boolean, minDim: number, allVars: boolean): Promi
       collectionCount: variableCollections ? variableCollections.length : 0,
       truncated: images.length >= MAX_EXPORTS,
     },
+    collections,
     nodes,
     variables,
     variableCollections,
@@ -505,23 +527,28 @@ async function run(withImages: boolean, minDim: number, allVars: boolean): Promi
 }
 
 const STORAGE_MIN_DIM = "minExportDim";
-const STORAGE_ALL_VARS = "allVars";
+const STORAGE_COLLECTIONS = "exportCollectionIds";
 let minExportDim = MIN_EXPORT_DIM; // live values, persisted across reloads
-let exportAllVars = false;
+let exportCollectionIds: string[] = [];
 
-figma.showUI(__html__, { width: 440, height: 720, themeColors: true });
+figma.showUI(__html__, { width: 440, height: 740, themeColors: true });
 
-figma.ui.onmessage = async (msg: { type: string; minDim?: number; allVars?: boolean; text?: string }) => {
+figma.ui.onmessage = async (msg: {
+  type: string;
+  minDim?: number;
+  collectionIds?: string[];
+  text?: string;
+}) => {
   if (msg.type === "rerun") {
     if (typeof msg.minDim === "number" && msg.minDim >= 0) {
       minExportDim = Math.floor(msg.minDim);
       await figma.clientStorage.setAsync(STORAGE_MIN_DIM, minExportDim);
     }
-    if (typeof msg.allVars === "boolean") {
-      exportAllVars = msg.allVars;
-      await figma.clientStorage.setAsync(STORAGE_ALL_VARS, exportAllVars);
+    if (Array.isArray(msg.collectionIds)) {
+      exportCollectionIds = msg.collectionIds.filter((x) => typeof x === "string");
+      await figma.clientStorage.setAsync(STORAGE_COLLECTIONS, exportCollectionIds);
     }
-    void run(true, minExportDim, exportAllVars);
+    void run(true, minExportDim, exportCollectionIds);
   } else if (msg.type === "close") {
     figma.closePlugin();
   } else if (msg.type === "notify" && msg.text) {
@@ -535,12 +562,21 @@ figma.on("selectionchange", () => {
   figma.ui.postMessage({ type: "hint", count: figma.currentPage.selection.length });
 });
 
-// Restore the saved settings, tell the UI, then do the first export.
+// Restore saved settings, send the collection list + selection, first export.
 (async () => {
   const storedDim = await figma.clientStorage.getAsync(STORAGE_MIN_DIM);
   if (typeof storedDim === "number" && storedDim >= 0) minExportDim = storedDim;
-  const storedAll = await figma.clientStorage.getAsync(STORAGE_ALL_VARS);
-  if (typeof storedAll === "boolean") exportAllVars = storedAll;
-  figma.ui.postMessage({ type: "settings", minDim: minExportDim, allVars: exportAllVars });
-  void run(true, minExportDim, exportAllVars);
+  const storedCols = await figma.clientStorage.getAsync(STORAGE_COLLECTIONS);
+  if (Array.isArray(storedCols)) exportCollectionIds = storedCols.filter((x) => typeof x === "string");
+  const collections = await listCollections();
+  // Drop any saved ids whose collection no longer exists.
+  const live = new Set(collections.map((c) => c.id));
+  exportCollectionIds = exportCollectionIds.filter((id) => live.has(id));
+  figma.ui.postMessage({
+    type: "settings",
+    minDim: minExportDim,
+    collections,
+    collectionIds: exportCollectionIds,
+  });
+  void run(true, minExportDim, exportCollectionIds);
 })();

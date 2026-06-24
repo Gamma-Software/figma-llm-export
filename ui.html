@@ -52,15 +52,19 @@
         color: var(--fg);
       }
       #toolbar .unit { color: var(--muted); }
-      #toolbar .chk {
-        margin-left: auto;
-        display: flex;
-        align-items: center;
-        gap: 4px;
-        cursor: pointer;
-        font-weight: 500;
+      #varbar {
+        padding: 8px 14px;
+        border-bottom: 1px solid var(--border);
+        background: var(--surface);
+        font-size: 11px;
       }
-      #toolbar .chk input { cursor: pointer; }
+      .vb-head { display: flex; align-items: baseline; justify-content: space-between; }
+      .vb-label { font-weight: 500; }
+      .vb-empty { color: var(--muted); }
+      .coll-list { display: flex; flex-wrap: wrap; gap: 6px 12px; margin-top: 6px; max-height: 90px; overflow-y: auto; }
+      .coll-list label { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+      .coll-list label input { cursor: pointer; }
+      .coll-list .count { color: var(--muted); }
       main { flex: 1; overflow-y: auto; padding: 12px 14px; }
       .section-label {
         font-size: 10px;
@@ -184,9 +188,16 @@
       <label for="minDim">Min crop size</label>
       <input id="minDim" type="number" min="0" step="1" value="24" />
       <span class="unit">px</span>
-      <label class="chk" title="Export the file's entire variable set (all collections), not just the ones referenced by the selection">
-        <input type="checkbox" id="allVars" /> All variables
-      </label>
+    </div>
+    <div id="varbar">
+      <div class="vb-head">
+        <span class="vb-label">Variable collections to export</span>
+        <span class="sel-tools">
+          <button class="link" id="collAll" type="button">All</button>
+          <button class="link" id="collNone" type="button">None</button>
+        </span>
+      </div>
+      <div id="collList" class="coll-list"><span class="vb-empty">no local variables</span></div>
     </div>
     <main>
       <div id="empty" class="empty">Select one or more layers, then hit <b>Refresh</b>.</div>
@@ -221,10 +232,41 @@
       const thumbsEl = $("thumbs");
       const jsonEl = $("json");
       const minDimEl = $("minDim");
-      const allVarsEl = $("allVars");
+      const collListEl = $("collList");
+
+      let collections = [];          // [{ id, name, variableCount }]
+      let selectedColl = new Set();  // collection ids picked for full export
 
       const minDim = () => Math.max(0, parseInt(minDimEl.value, 10) || 0);
-      const opts = () => ({ minDim: minDim(), allVars: allVarsEl.checked });
+      const opts = () => ({ minDim: minDim(), collectionIds: [...selectedColl] });
+
+      // Render the collection checklist, preserving current ticks.
+      function renderCollections() {
+        if (!collections.length) {
+          collListEl.innerHTML = '<span class="vb-empty">no local variables</span>';
+          return;
+        }
+        collListEl.innerHTML = "";
+        for (const c of collections) {
+          const label = document.createElement("label");
+          const cb = document.createElement("input");
+          cb.type = "checkbox";
+          cb.checked = selectedColl.has(c.id);
+          cb.onchange = () => {
+            if (cb.checked) selectedColl.add(c.id);
+            else selectedColl.delete(c.id);
+            post("rerun", opts());
+          };
+          const name = document.createTextNode(c.name + " ");
+          const count = document.createElement("span");
+          count.className = "count";
+          count.textContent = "(" + c.variableCount + ")";
+          label.appendChild(cb);
+          label.appendChild(name);
+          label.appendChild(count);
+          collListEl.appendChild(label);
+        }
+      }
 
       // Latest export. `selected` holds the indices the user kept checked; the
       // footer actions build their payload from that subset only.
@@ -302,9 +344,11 @@
         if (!msg) return;
 
         if (msg.type === "settings") {
-          // Saved settings restored from clientStorage.
+          // Saved settings + collection list restored from the sandbox.
           if (typeof msg.minDim === "number") minDimEl.value = msg.minDim;
-          if (typeof msg.allVars === "boolean") allVarsEl.checked = msg.allVars;
+          collections = msg.collections || [];
+          selectedColl = new Set(msg.collectionIds || []);
+          renderCollections();
           return;
         }
 
@@ -342,6 +386,10 @@
           variables = msg.variables || [];
           variableCollections = msg.variableCollections || null;
           rawImages = msg.images || [];
+          if (msg.collections) {
+            collections = msg.collections; // keep counts fresh
+            renderCollections();
+          }
           allImages = rawImages.map((img) => ({
             id: img.id,
             name: img.name,
@@ -399,7 +447,7 @@
         }
         jsonEl.textContent = JSON.stringify(preview, null, 2);
         const varLabel = variableCollections
-          ? "all vars (" + (meta.collectionCount || variableCollections.length) + " collections)"
+          ? variableCollections.length + " collection(s)"
           : variables.length + " var(s)";
         statusEl.textContent =
           meta.selectionCount + " selected · " + selected.size + "/" + allImages.length + " crop(s) · " +
@@ -417,7 +465,17 @@
 
       // Changing a setting re-exports immediately (also persisted sandbox-side).
       minDimEl.onchange = () => post("rerun", opts());
-      allVarsEl.onchange = () => post("rerun", opts());
+
+      $("collAll").onclick = () => {
+        selectedColl = new Set(collections.map((c) => c.id));
+        renderCollections();
+        post("rerun", opts());
+      };
+      $("collNone").onclick = () => {
+        selectedColl = new Set();
+        renderCollections();
+        post("rerun", opts());
+      };
 
       $("selAll").onclick = () => selectAll(true);
       $("selNone").onclick = () => selectAll(false);
