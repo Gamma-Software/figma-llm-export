@@ -52,13 +52,15 @@
         color: var(--fg);
       }
       #toolbar .unit { color: var(--muted); }
-      #toolbar .hint {
-        color: var(--muted);
+      #toolbar .chk {
         margin-left: auto;
-        text-align: right;
-        font-size: 10px;
-        max-width: 190px;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        cursor: pointer;
+        font-weight: 500;
       }
+      #toolbar .chk input { cursor: pointer; }
       main { flex: 1; overflow-y: auto; padding: 12px 14px; }
       .section-label {
         font-size: 10px;
@@ -182,7 +184,9 @@
       <label for="minDim">Min crop size</label>
       <input id="minDim" type="number" min="0" step="1" value="24" />
       <span class="unit">px</span>
-      <span class="hint">elements smaller than this aren't cropped on their own</span>
+      <label class="chk" title="Export the file's entire variable set (all collections), not just the ones referenced by the selection">
+        <input type="checkbox" id="allVars" /> All variables
+      </label>
     </div>
     <main>
       <div id="empty" class="empty">Select one or more layers, then hit <b>Refresh</b>.</div>
@@ -205,6 +209,7 @@
       <button id="copy" disabled>Copy payload</button>
       <button id="dlJson" disabled>Download JSON</button>
       <button id="dlPng" disabled>Download PNG(s)</button>
+      <button id="dlVars" disabled>Download variables</button>
       <button id="dlBundle" class="primary" disabled>Download LLM bundle (JSON + base64 PNG)</button>
     </footer>
 
@@ -216,14 +221,17 @@
       const thumbsEl = $("thumbs");
       const jsonEl = $("json");
       const minDimEl = $("minDim");
+      const allVarsEl = $("allVars");
 
       const minDim = () => Math.max(0, parseInt(minDimEl.value, 10) || 0);
+      const opts = () => ({ minDim: minDim(), allVars: allVarsEl.checked });
 
       // Latest export. `selected` holds the indices the user kept checked; the
       // footer actions build their payload from that subset only.
       let meta = null;      // { file, page, selectionCount, truncated }
       let nodes = [];       // serialized node tree
       let variables = [];   // referenced variable definitions
+      let variableCollections = null; // full local-variable dump (when All variables on)
       let rawImages = [];   // [{ id, name, type, scale, bytes:Uint8Array }]
       let allImages = [];   // rawImages + { mimeType, base64 }
       let selected = new Set();
@@ -232,7 +240,7 @@
       const chosenRaw = () => rawImages.filter((_, i) => selected.has(i));
 
       function buildPayload() {
-        return {
+        const p = {
           source: "figma",
           exportedAt: new Date().toISOString(),
           file: meta.file,
@@ -242,6 +250,8 @@
           variables,
           images: chosen(),
         };
+        if (variableCollections) p.variableCollections = variableCollections;
+        return p;
       }
 
       const post = (type, extra) => parent.postMessage({ pluginMessage: { type, ...extra } }, "*");
@@ -284,7 +294,7 @@
       }
 
       function setEnabled(on) {
-        for (const id of ["copy", "dlJson", "dlPng", "dlBundle"]) $(id).disabled = !on;
+        for (const id of ["copy", "dlJson", "dlPng", "dlVars", "dlBundle"]) $(id).disabled = !on;
       }
 
       onmessage = (event) => {
@@ -292,14 +302,16 @@
         if (!msg) return;
 
         if (msg.type === "settings") {
-          // Saved threshold restored from clientStorage.
+          // Saved settings restored from clientStorage.
           if (typeof msg.minDim === "number") minDimEl.value = msg.minDim;
+          if (typeof msg.allVars === "boolean") allVarsEl.checked = msg.allVars;
           return;
         }
 
         if (msg.type === "empty") {
           meta = null;
           variables = [];
+          variableCollections = null;
           rawImages = [];
           allImages = [];
           selected = new Set();
@@ -328,6 +340,7 @@
           meta = msg.meta;
           nodes = msg.nodes;
           variables = msg.variables || [];
+          variableCollections = msg.variableCollections || null;
           rawImages = msg.images || [];
           allImages = rawImages.map((img) => ({
             id: img.id,
@@ -379,11 +392,18 @@
           ...buildPayload(),
           images: chosen().map((i) => ({ ...i, base64: "<" + i.base64.length + " base64 chars>" })),
         };
+        if (preview.variableCollections) {
+          const varTotal = variableCollections.reduce((n, c) => n + (c.variables ? c.variables.length : 0), 0);
+          preview.variableCollections =
+            "<" + variableCollections.length + " collections, " + varTotal + " variables — full set in payload>";
+        }
         jsonEl.textContent = JSON.stringify(preview, null, 2);
+        const varLabel = variableCollections
+          ? "all vars (" + (meta.collectionCount || variableCollections.length) + " collections)"
+          : variables.length + " var(s)";
         statusEl.textContent =
           meta.selectionCount + " selected · " + selected.size + "/" + allImages.length + " crop(s) · " +
-          variables.length + " var(s)" +
-          (meta.truncated ? " (capped)" : "");
+          varLabel + (meta.truncated ? " (capped)" : "");
       }
 
       function selectAll(on) {
@@ -393,11 +413,11 @@
       }
 
       // --- footer actions ---
-      $("refresh").onclick = () => post("rerun", { minDim: minDim() });
+      $("refresh").onclick = () => post("rerun", opts());
 
-      // Changing the threshold re-exports immediately with the new value
-      // (also persisted sandbox-side).
-      minDimEl.onchange = () => post("rerun", { minDim: minDim() });
+      // Changing a setting re-exports immediately (also persisted sandbox-side).
+      minDimEl.onchange = () => post("rerun", opts());
+      allVarsEl.onchange = () => post("rerun", opts());
 
       $("selAll").onclick = () => selectAll(true);
       $("selNone").onclick = () => selectAll(false);
@@ -421,6 +441,13 @@
           const fname = String(i + 1).padStart(2, "0") + "-" + slug(img.name) + "@" + img.scale + "x.png";
           download(fname, new Blob([img.bytes], { type: "image/png" }));
         });
+      };
+
+      $("dlVars").onclick = () => {
+        if (!meta) return;
+        // Full local dump when "All variables" is on; otherwise the referenced subset.
+        const data = variableCollections || variables;
+        download(slug(meta.file) + "-variables.json", new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }));
       };
 
       $("dlBundle").onclick = () => {

@@ -76,7 +76,18 @@ and per-mode values (colors as hex, aliases as `{ alias: "Collection/name" }`):
 ]
 ```
 
-Only referenced variables are exported, not the whole file's token set.
+Only referenced variables are exported by default.
+
+#### All variables (full dump)
+
+Tick **All variables** in the toolbar to additionally export the file's entire
+local variable set under `variableCollections`, in Figma's native
+export-variables shape — one object per collection (`id`, `name`, `modes`,
+`variableIds`, `variables[]`), each variable carrying raw `valuesByMode`,
+`resolvedValuesByMode` (alias chains followed, with `alias`/`aliasName`),
+`scopes`, `hiddenFromPublishing`, and `codeSyntax`. The **Download variables**
+button saves just this (or the referenced subset when the toggle is off). The
+toggle is persisted across reloads.
 
 ## Develop
 

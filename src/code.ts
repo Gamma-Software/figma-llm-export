@@ -201,6 +201,86 @@ async function buildVariableDefs(seedIds: Set<string>): Promise<VariableDef[]> {
   return defs;
 }
 
+// --- Full local-variables export (Figma "export variables" shape) ---------
+// Mirrors the per-collection JSON: raw valuesByMode kept as-is (colors stay
+// {r,g,b,a}), plus a resolvedValuesByMode with the alias chain followed.
+
+function resolveAliasValue(
+  startId: string,
+  modeId: string,
+  byId: Map<string, Variable>,
+  guard = 0
+): VariableValue | null {
+  if (guard > 24) return null;
+  const target = byId.get(startId);
+  if (!target) return null;
+  let val: VariableValue | undefined = target.valuesByMode[modeId];
+  if (val === undefined) {
+    // Target collection may not share this modeId — fall back to its first mode.
+    const keys = Object.keys(target.valuesByMode);
+    val = keys.length ? target.valuesByMode[keys[0]] : undefined;
+  }
+  if (val && typeof val === "object" && (val as VariableAlias).type === "VARIABLE_ALIAS") {
+    return resolveAliasValue((val as VariableAlias).id, modeId, byId, guard + 1);
+  }
+  return val ?? null;
+}
+
+function fullVariable(v: Variable, byId: Map<string, Variable>): unknown {
+  const resolvedValuesByMode: Record<string, unknown> = {};
+  for (const modeId of Object.keys(v.valuesByMode)) {
+    const raw = v.valuesByMode[modeId];
+    if (raw && typeof raw === "object" && (raw as VariableAlias).type === "VARIABLE_ALIAS") {
+      const aliasId = (raw as VariableAlias).id;
+      const target = byId.get(aliasId);
+      resolvedValuesByMode[modeId] = {
+        resolvedValue: resolveAliasValue(aliasId, modeId, byId),
+        alias: aliasId,
+        aliasName: target ? target.name : null,
+      };
+    } else {
+      resolvedValuesByMode[modeId] = { resolvedValue: raw, alias: null };
+    }
+  }
+  return {
+    id: v.id,
+    name: v.name,
+    description: v.description,
+    type: v.resolvedType,
+    valuesByMode: v.valuesByMode,
+    resolvedValuesByMode,
+    scopes: v.scopes,
+    hiddenFromPublishing: v.hiddenFromPublishing,
+    codeSyntax: v.codeSyntax,
+  };
+}
+
+// Every local variable collection in the file, fully serialized.
+async function buildVariableCollections(): Promise<unknown[]> {
+  const [cols, vars] = await Promise.all([
+    figma.variables.getLocalVariableCollectionsAsync(),
+    figma.variables.getLocalVariablesAsync(),
+  ]);
+  const byId = new Map(vars.map((v) => [v.id, v]));
+  const byCol = new Map<string, Variable[]>();
+  for (const v of vars) {
+    const arr = byCol.get(v.variableCollectionId) || [];
+    arr.push(v);
+    byCol.set(v.variableCollectionId, arr);
+  }
+  return cols.map((c) => {
+    const modes: Record<string, string> = {};
+    for (const m of c.modes) modes[m.modeId] = m.name;
+    return {
+      id: c.id,
+      name: c.name,
+      modes,
+      variableIds: c.variableIds,
+      variables: (byCol.get(c.id) || []).map((v) => fullVariable(v, byId)),
+    };
+  });
+}
+
 async function serialize(node: BaseNode, depth: number): Promise<SerializedNode> {
   const out: SerializedNode = { id: node.id, name: node.name, type: node.type };
   const n = node as unknown as Record<string, unknown>;
@@ -382,7 +462,7 @@ async function collectExports(
   }
 }
 
-async function run(withImages: boolean, minDim: number): Promise<void> {
+async function run(withImages: boolean, minDim: number, allVars: boolean): Promise<void> {
   const selection = figma.currentPage.selection;
   if (!selection.length) {
     figma.ui.postMessage({ type: "empty" });
@@ -395,6 +475,8 @@ async function run(withImages: boolean, minDim: number): Promise<void> {
   const nodes = await Promise.all(selection.map((s) => serialize(s, 0)));
   // Every variable touched by the selection (+ alias targets), fully defined.
   const variables = await buildVariableDefs(usedVarIds);
+  // Full local-variable dump (all collections), only when requested.
+  const variableCollections = allVars ? await buildVariableCollections() : null;
 
   const images: ExportedImage[] = [];
   if (withImages) {
@@ -412,26 +494,34 @@ async function run(withImages: boolean, minDim: number): Promise<void> {
       selectionCount: selection.length,
       imageCount: images.length,
       variableCount: variables.length,
+      collectionCount: variableCollections ? variableCollections.length : 0,
       truncated: images.length >= MAX_EXPORTS,
     },
     nodes,
     variables,
+    variableCollections,
     images,
   });
 }
 
 const STORAGE_MIN_DIM = "minExportDim";
-let minExportDim = MIN_EXPORT_DIM; // live value, persisted across reloads
+const STORAGE_ALL_VARS = "allVars";
+let minExportDim = MIN_EXPORT_DIM; // live values, persisted across reloads
+let exportAllVars = false;
 
 figma.showUI(__html__, { width: 440, height: 720, themeColors: true });
 
-figma.ui.onmessage = async (msg: { type: string; minDim?: number; text?: string }) => {
+figma.ui.onmessage = async (msg: { type: string; minDim?: number; allVars?: boolean; text?: string }) => {
   if (msg.type === "rerun") {
     if (typeof msg.minDim === "number" && msg.minDim >= 0) {
       minExportDim = Math.floor(msg.minDim);
       await figma.clientStorage.setAsync(STORAGE_MIN_DIM, minExportDim);
     }
-    void run(true, minExportDim);
+    if (typeof msg.allVars === "boolean") {
+      exportAllVars = msg.allVars;
+      await figma.clientStorage.setAsync(STORAGE_ALL_VARS, exportAllVars);
+    }
+    void run(true, minExportDim, exportAllVars);
   } else if (msg.type === "close") {
     figma.closePlugin();
   } else if (msg.type === "notify" && msg.text) {
@@ -445,10 +535,12 @@ figma.on("selectionchange", () => {
   figma.ui.postMessage({ type: "hint", count: figma.currentPage.selection.length });
 });
 
-// Restore the saved threshold, tell the UI, then do the first export.
+// Restore the saved settings, tell the UI, then do the first export.
 (async () => {
-  const stored = await figma.clientStorage.getAsync(STORAGE_MIN_DIM);
-  if (typeof stored === "number" && stored >= 0) minExportDim = stored;
-  figma.ui.postMessage({ type: "settings", minDim: minExportDim });
-  void run(true, minExportDim);
+  const storedDim = await figma.clientStorage.getAsync(STORAGE_MIN_DIM);
+  if (typeof storedDim === "number" && storedDim >= 0) minExportDim = storedDim;
+  const storedAll = await figma.clientStorage.getAsync(STORAGE_ALL_VARS);
+  if (typeof storedAll === "boolean") exportAllVars = storedAll;
+  figma.ui.postMessage({ type: "settings", minDim: minExportDim, allVars: exportAllVars });
+  void run(true, minExportDim, exportAllVars);
 })();
