@@ -223,6 +223,7 @@
       // footer actions build their payload from that subset only.
       let meta = null;      // { file, page, selectionCount, truncated }
       let nodes = [];       // serialized node tree
+      let variables = [];   // referenced variable definitions
       let rawImages = [];   // [{ id, name, type, scale, bytes:Uint8Array }]
       let allImages = [];   // rawImages + { mimeType, base64 }
       let selected = new Set();
@@ -238,6 +239,7 @@
           page: meta.page,
           selectionCount: meta.selectionCount,
           nodes,
+          variables,
           images: chosen(),
         };
       }
@@ -297,6 +299,7 @@
 
         if (msg.type === "empty") {
           meta = null;
+          variables = [];
           rawImages = [];
           allImages = [];
           selected = new Set();
@@ -324,6 +327,7 @@
 
           meta = msg.meta;
           nodes = msg.nodes;
+          variables = msg.variables || [];
           rawImages = msg.images || [];
           allImages = rawImages.map((img) => ({
             id: img.id,
@@ -377,7 +381,8 @@
         };
         jsonEl.textContent = JSON.stringify(preview, null, 2);
         statusEl.textContent =
-          meta.selectionCount + " selected · " + selected.size + "/" + allImages.length + " crop(s) kept" +
+          meta.selectionCount + " selected · " + selected.size + "/" + allImages.length + " crop(s) · " +
+          variables.length + " var(s)" +
           (meta.truncated ? " (capped)" : "");
       }
 

@@ -36,7 +36,7 @@ interface SerializedNode {
   children?: SerializedNode[];
 }
 
-async function simplifyPaints(paints: unknown, node: BaseNode): Promise<unknown> {
+async function simplifyPaints(paints: unknown): Promise<unknown> {
   if (isMixed(paints) || !Array.isArray(paints)) return undefined;
   return Promise.all(
     (paints as Paint[]).map(async (p) => {
@@ -47,7 +47,7 @@ async function simplifyPaints(paints: unknown, node: BaseNode): Promise<unknown>
         const hex = rgbToHex(r, g, b);
         const cb = (p as SolidPaint).boundVariables?.color;
         // Inline the bound variable on the color itself: { value, variable }.
-        base.color = cb && cb.id ? { value: hex, variable: bindLabel(await resolveVar(cb.id, node)) } : hex;
+        base.color = cb && cb.id ? { value: hex, variable: bindLabel(await resolveVar(cb.id)) } : hex;
       } else if (p.type.startsWith("GRADIENT")) {
         base.stops = (p as GradientPaint).gradientStops.map((s) => ({
           position: round(s.position),
@@ -68,20 +68,39 @@ function rgbToHex(r: number, g: number, b: number): string {
   return `#${h(r)}${h(g)}${h(b)}`;
 }
 
-// Collection name per id, deduped across the whole selection.
-const collectionNameCache = new Map<string, string | null>();
-async function resolveCollectionName(id: string): Promise<string | null> {
-  const hit = collectionNameCache.get(id);
-  if (hit !== undefined) return hit;
-  let name: string | null = null;
+function rgbaToHex(c: RGBA): string {
+  let s = rgbToHex(c.r, c.g, c.b);
+  if (typeof c.a === "number" && c.a < 1) {
+    s += Math.round(c.a * 255).toString(16).padStart(2, "0"); // 8-digit when translucent
+  }
+  return s;
+}
+
+// Variable ids referenced by the current selection — seeds the variables export.
+const usedVarIds = new Set<string>();
+
+// Collection info (name + modeId->name) per id, deduped across the selection.
+interface CollectionInfo {
+  name: string | null;
+  modes: Record<string, string>;
+}
+const collectionCache = new Map<string, CollectionInfo>();
+async function resolveCollection(id: string): Promise<CollectionInfo> {
+  const hit = collectionCache.get(id);
+  if (hit) return hit;
+  let info: CollectionInfo = { name: null, modes: {} };
   try {
     const col = await figma.variables.getVariableCollectionByIdAsync(id);
-    name = col ? col.name : null;
+    if (col) {
+      const modes: Record<string, string> = {};
+      for (const m of col.modes) modes[m.modeId] = m.name;
+      info = { name: col.name, modes };
+    }
   } catch {
-    name = null;
+    /* keep empty */
   }
-  collectionNameCache.set(id, name);
-  return name;
+  collectionCache.set(id, info);
+  return info;
 }
 
 interface ResolvedVar {
@@ -90,10 +109,11 @@ interface ResolvedVar {
   collection: string | null;
 }
 
-// Resolve a variable id to its name + collection. The concrete value is read
-// straight from the node's property (already mode-resolved), so we don't need
-// resolveForConsumer here.
-async function resolveVar(id: string, _node: BaseNode): Promise<ResolvedVar> {
+// Resolve a variable id to its name + collection, and record it as referenced.
+// The concrete value is read straight from the node's property (already
+// mode-resolved), so resolveForConsumer isn't needed here.
+async function resolveVar(id: string): Promise<ResolvedVar> {
+  usedVarIds.add(id);
   let v: Variable | null = null;
   try {
     v = await figma.variables.getVariableByIdAsync(id);
@@ -101,7 +121,7 @@ async function resolveVar(id: string, _node: BaseNode): Promise<ResolvedVar> {
     v = null;
   }
   if (!v) return { id, name: null, collection: null };
-  const collection = await resolveCollectionName(v.variableCollectionId);
+  const collection = (await resolveCollection(v.variableCollectionId)).name;
   return { id, name: v.name, collection };
 }
 
@@ -121,10 +141,64 @@ async function nodeBindingLabels(node: BaseNode): Promise<Record<string, string>
   for (const field of Object.keys(bv)) {
     const val = bv[field] as { id?: string };
     if (val && !Array.isArray(val) && val.id) {
-      out[field] = bindLabel(await resolveVar(val.id, node));
+      out[field] = bindLabel(await resolveVar(val.id));
     }
   }
   return out;
+}
+
+// Full definition of a referenced variable, with per-mode values.
+interface VariableDef {
+  id: string;
+  name: string;
+  type: string;
+  collection: string | null;
+  valuesByMode: Record<string, unknown>;
+}
+
+// Turn a raw stored variable value into something serializable: colors -> hex,
+// aliases -> { alias: "Collection/name" } (and the target gets queued so it's
+// exported too). Booleans/numbers/strings pass through.
+async function tokenValue(raw: VariableValue, queue: string[]): Promise<unknown> {
+  if (raw && typeof raw === "object") {
+    if ("r" in raw && "g" in raw && "b" in raw) return rgbaToHex(raw as RGBA);
+    if ((raw as VariableAlias).type === "VARIABLE_ALIAS") {
+      const targetId = (raw as VariableAlias).id;
+      queue.push(targetId);
+      return { alias: bindLabel(await resolveVar(targetId)) };
+    }
+  }
+  return raw;
+}
+
+// Build the definitions for every referenced variable, following alias chains
+// so the export is self-contained. Mode ids are resolved to mode names.
+async function buildVariableDefs(seedIds: Set<string>): Promise<VariableDef[]> {
+  const defs: VariableDef[] = [];
+  const seen = new Set<string>();
+  const queue = Array.from(seedIds);
+  while (queue.length) {
+    const id = queue.shift() as string;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    let v: Variable | null = null;
+    try {
+      v = await figma.variables.getVariableByIdAsync(id);
+    } catch {
+      v = null;
+    }
+    if (!v) continue;
+    const col = await resolveCollection(v.variableCollectionId);
+    const valuesByMode: Record<string, unknown> = {};
+    for (const modeId of Object.keys(v.valuesByMode)) {
+      const modeName = col.modes[modeId] || modeId;
+      valuesByMode[modeName] = await tokenValue(v.valuesByMode[modeId], queue);
+    }
+    defs.push({ id, name: v.name, type: v.resolvedType, collection: col.name, valuesByMode });
+  }
+  // Stable order: by collection then name.
+  defs.sort((a, b) => (a.collection || "").localeCompare(b.collection || "") || a.name.localeCompare(b.name));
+  return defs;
 }
 
 async function serialize(node: BaseNode, depth: number): Promise<SerializedNode> {
@@ -187,7 +261,7 @@ async function serialize(node: BaseNode, depth: number): Promise<SerializedNode>
           end: s.end,
           fontSize: s.fontSize,
           fontName: s.fontName,
-          fills: await simplifyPaints(s.fills, node),
+          fills: await simplifyPaints(s.fills),
         }))
       );
     }
@@ -195,11 +269,11 @@ async function serialize(node: BaseNode, depth: number): Promise<SerializedNode>
 
   // Paint (per-paint color bindings are inlined inside simplifyPaints)
   if ("fills" in node) {
-    const fills = await simplifyPaints((node as GeometryMixin).fills, node);
+    const fills = await simplifyPaints((node as GeometryMixin).fills);
     if (fills) out.fills = fills;
   }
   if ("strokes" in node && Array.isArray((node as GeometryMixin).strokes) && (node as GeometryMixin).strokes.length) {
-    out.strokes = await simplifyPaints((node as GeometryMixin).strokes, node);
+    out.strokes = await simplifyPaints((node as GeometryMixin).strokes);
     if (!isMixed(n.strokeWeight)) {
       out.strokeWeight = bind(n.strokeWeight, "strokeWeight");
     } else if ("strokeTopWeight" in node) {
@@ -317,7 +391,10 @@ async function run(withImages: boolean, minDim: number): Promise<void> {
 
   figma.ui.postMessage({ type: "working", count: selection.length });
 
+  usedVarIds.clear(); // referenced ids accumulate during this serialize pass
   const nodes = await Promise.all(selection.map((s) => serialize(s, 0)));
+  // Every variable touched by the selection (+ alias targets), fully defined.
+  const variables = await buildVariableDefs(usedVarIds);
 
   const images: ExportedImage[] = [];
   if (withImages) {
@@ -334,9 +411,11 @@ async function run(withImages: boolean, minDim: number): Promise<void> {
       page: figma.currentPage.name,
       selectionCount: selection.length,
       imageCount: images.length,
+      variableCount: variables.length,
       truncated: images.length >= MAX_EXPORTS,
     },
     nodes,
+    variables,
     images,
   });
 }

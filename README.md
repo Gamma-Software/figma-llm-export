@@ -61,6 +61,23 @@ padding, item spacing, opacity, size, and fontSize:
             "color": { "value": "#181818", "variable": "Theme/card-background" } } ]
 ```
 
+### Variables export
+
+Every variable the selection references (following alias chains, so it's
+self-contained) is also dumped under `variables`, with its type, collection,
+and per-mode values (colors as hex, aliases as `{ alias: "Collection/name" }`):
+
+```jsonc
+"variables": [
+  { "id": "VariableID:…", "name": "radius/card-radius", "type": "FLOAT",
+    "collection": "Theme", "valuesByMode": { "Dark": 12, "Light": 12 } },
+  { "id": "VariableID:…", "name": "card-background", "type": "COLOR",
+    "collection": "Theme", "valuesByMode": { "Dark": "#181818", "Light": "#ffffff" } }
+]
+```
+
+Only referenced variables are exported, not the whole file's token set.
+
 ## Develop
 
 ```bash
