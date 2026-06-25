@@ -121,11 +121,33 @@ your existing components, and verifies the result against the exported
 screenshot. It bundles a **skill** (in-thread workflow) and a **subagent**
 (delegated, isolated conversions) — installed together.
 
+### Install
+
+One line (needs the [Claude Code CLI](https://docs.claude.com/en/docs/claude-code)):
+
 ```bash
-# in Claude Code
+curl -fsSL https://raw.githubusercontent.com/Gamma-Software/figma-llm-export/main/install.sh | bash
+```
+
+Then restart Claude Code (or `/reload-plugins`). The script adds this repo as a
+marketplace and installs the plugin via the `claude` CLI — no Node required.
+`SCOPE=project` (or `local`) before the command changes the install scope.
+
+<details><summary>Manual install (CLI or in-app)</summary>
+
+```bash
+# from any shell:
+claude plugin marketplace add Gamma-Software/figma-llm-export
+claude plugin install figma-to-code@figma-llm-export
+
+# or inside an interactive Claude Code terminal:
 /plugin marketplace add Gamma-Software/figma-llm-export
 /plugin install figma-to-code@figma-llm-export
 ```
+
+The interactive `/plugin` command isn't available in the web/SDK environments —
+use the `curl` line or the `claude plugin` CLI there.
+</details>
 
 Then export a selection from this Figma plugin, save the payload, and ask:
 
