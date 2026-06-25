@@ -1,0 +1,21 @@
+{
+  "name": "figma-to-code",
+  "description": "Turn a figma-llm-export payload (node JSON + design tokens + rendered PNG/SVG) into real application code. Maps Figma variables to your app's design tokens instead of hardcoding values, translates auto-layout to flexbox, matches instances to existing components, and verifies the result against the exported screenshot.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Gamma Software",
+    "url": "https://github.com/Gamma-Software"
+  },
+  "homepage": "https://github.com/Gamma-Software/figma-llm-export",
+  "repository": "https://github.com/Gamma-Software/figma-llm-export",
+  "license": "MIT",
+  "keywords": [
+    "figma",
+    "design-to-code",
+    "design-tokens",
+    "shadcn",
+    "tailwind",
+    "react",
+    "ui"
+  ]
+}
