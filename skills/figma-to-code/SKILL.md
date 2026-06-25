@@ -89,6 +89,30 @@ Map Figma constructs to the target framework using
 - `INSTANCE` → an **existing component**. The node's `mainComponent` and
   `componentProperties` (variant props) tell you which and in what state.
 
+### 3b. Spacing & dimension fidelity — capture every value, never approximate
+
+Spacing is where design-to-code silently drifts. Reproduce it **exactly**, and
+understand Figma's model: there is **no per-element margin** in auto-layout.
+
+- **Gap between siblings** = the parent's `itemSpacing` → `gap-*`. A `gap=0` is a
+  real value (means "no gap"); don't assume a default.
+- **Inset from edges** = the parent's `padding`, which is **per-side** (T/R/B/L)
+  and frequently asymmetric (e.g. `0/16/0/0` = only `pr-4`). The inspector prints
+  `pad[T/R/B/L]=…` — map each side independently to `pt-/pr-/pb-/pl-`; collapse to
+  `px-/py-/p-` only when sides are genuinely equal.
+- **What looks like a margin** on one child is normally the parent's padding or
+  gap. For a child of a **non-auto-layout** frame, its `x`/`y` IS its offset
+  (inspector shows `@(x,y)←offset`) — reproduce via absolute position, an
+  explicit margin, or a centering rule, whichever matches intent.
+- **Per-corner radius** (`cornerRadius` as `{topLeft,…}`) and **per-side stroke
+  weight** (`strokeWeight.{top,right,bottom,left}`) are independent too: `0/0/15/15`
+  radius → `rounded-t-[…]` only; `bottom:1` stroke → `border-b`. Don't round the
+  whole box or border all sides.
+- **Honour bound dimension tokens** for width/height (`w-[var(--…)]`), not the px.
+
+Before moving on, account for **every** spacing/size number the inspector
+reported — each one is intentional.
+
 ### 4. Reuse components, don't reinvent
 
 For every `INSTANCE`, search the codebase for a component matching its
@@ -111,9 +135,12 @@ utility class become arbitrary values referencing the var, e.g.
 ### 6. Verify against the screenshot
 
 This is not optional. Render the result (project's preview/dev server, or the
-`run`/preview tooling) and compare to the exported PNG: structure, spacing,
-colors, text. List any deltas. Then audit for hardcoded values that should have
-been tokens (`grep` your new file for hex/`px` literals) and report leftovers.
+`run`/preview tooling) and compare to the exported PNG: structure, **spacing**,
+colors, text. Specifically re-check spacing against the inspector output — every
+`gap`, per-side `pad`, per-corner `radius`, per-side `stroke`, and offset should
+be present in the code; inspect computed box metrics if the preview tool allows
+it. List any deltas. Then audit for hardcoded values that should have been tokens
+(`grep` your new file for hex/`px` literals) and report leftovers.
 
 ## Output to the user
 

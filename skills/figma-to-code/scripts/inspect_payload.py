@@ -53,20 +53,59 @@ def collect_tokens(node, acc):
             collect_tokens(item, acc)
 
 
+def padding_sides(node):
+    """Normalize padding from either `layout.padding:[t,r,b,l]` or the flat
+    paddingTop/Right/Bottom/Left fields. Returns {top,right,bottom,left} of
+    possibly-bound values, or None when no padding is present."""
+    layout = node.get("layout") or {}
+    arr = layout.get("padding")
+    if isinstance(arr, list) and len(arr) == 4:
+        t, r, b, l = arr
+    else:
+        t = node.get("paddingTop", layout.get("paddingTop", 0))
+        r = node.get("paddingRight", layout.get("paddingRight", 0))
+        b = node.get("paddingBottom", layout.get("paddingBottom", 0))
+        l = node.get("paddingLeft", layout.get("paddingLeft", 0))
+    sides = {"top": t, "right": r, "bottom": b, "left": l}
+    if any(s for s in sides.values() if (s.get("value") if _is_bound(s) else s)):
+        return sides
+    return None
+
+
+def item_spacing(node):
+    layout = node.get("layout") or {}
+    return layout.get("itemSpacing", node.get("itemSpacing"))
+
+
+def layout_mode(node):
+    layout = node.get("layout") or {}
+    return layout.get("mode") or node.get("layoutMode")
+
+
 def fmt_layout(node):
     bits = []
     layout = node.get("layout") or {}
-    mode = layout.get("mode") or node.get("layoutMode")
+    mode = layout_mode(node)
     if mode and mode != "NONE":
         bits.append(f"flex:{mode.lower()}")
-        if "itemSpacing" in layout:
-            bits.append(f"gap={disp(layout['itemSpacing'])}")
-        if layout.get("padding"):
-            bits.append(f"pad={layout['padding']}")
+        gap = item_spacing(node)
+        # gap of 0 is meaningful too — print it explicitly so it isn't assumed.
+        if gap is not None:
+            bits.append(f"gap={disp(gap)}")
+        pad = padding_sides(node)
+        if pad:
+            bits.append("pad[T/R/B/L]=" + "/".join(disp(pad[k]) for k in
+                                                    ("top", "right", "bottom", "left")))
         if layout.get("primaryAxisAlignItems"):
             bits.append(f"justify={layout['primaryAxisAlignItems']}")
         if layout.get("counterAxisAlignItems"):
             bits.append(f"align={layout['counterAxisAlignItems']}")
+    else:
+        # Not auto-layout: padding may still be set on a plain frame.
+        pad = padding_sides(node)
+        if pad:
+            bits.append("pad[T/R/B/L]=" + "/".join(disp(pad[k]) for k in
+                                                    ("top", "right", "bottom", "left")))
     ls = node.get("layoutSizing") or {}
     if ls:
         bits.append(f"sizing={ls.get('h','?')}/{ls.get('v','?')}")
@@ -121,11 +160,14 @@ def fmt_text(node):
     return "  ".join(str(p) for p in parts)
 
 
-def walk(node, depth, maxd, lines):
+def walk(node, depth, maxd, lines, parent_auto=True):
     pad = "  " * depth
     name = node.get("name", "?")
     ntype = node.get("type", "?")
     header = f"{pad}• {name}  [{ntype}]  {fmt_size(node)}"
+    # Child of a non-auto-layout parent: x/y ARE its offset (effective margins).
+    if not parent_auto and (node.get("x") or node.get("y")):
+        header += f"  @({node.get('x')},{node.get('y')})←offset"
     if ntype == "INSTANCE" and node.get("mainComponent"):
         header += f"  ⟶ component:{node['mainComponent']}"
     lines.append(header)
@@ -149,8 +191,10 @@ def walk(node, depth, maxd, lines):
         if kids:
             lines.append(f"{pad}    … {len(kids)} children (depth cut)")
         return
+    mode = layout_mode(node)
+    child_auto = bool(mode and mode != "NONE")
     for child in node.get("children") or []:
-        walk(child, depth + 1, maxd, lines)
+        walk(child, depth + 1, maxd, lines, parent_auto=child_auto)
 
 
 def extract_images(payload, outdir):

@@ -33,6 +33,12 @@ The `figma-to-code` skill is preloaded — follow its workflow exactly. In short
    code for stray hex/px literals that should have been tokens.
 
 Operating rules:
+- **Spacing fidelity is mandatory.** Account for every spacing/size value the
+  inspector reports — per-side `padding` (map each of T/R/B/L independently;
+  asymmetric is the norm), `itemSpacing`→`gap` (including `gap=0`), per-corner
+  `radius`, per-side `strokeWeight`, and x/y offsets of non-auto-layout children
+  (effective margins). Figma has no per-element margin — that space is the
+  parent's padding or gap. Never approximate a precise px to a "close" scale step.
 - Determine light vs dark from the resolved root color before binding modes.
 - If a value has no matching app token, use an arbitrary value **and flag it** as
   a candidate new token — do not invent token names or bury magic numbers.

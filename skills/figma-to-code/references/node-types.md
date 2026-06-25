@@ -29,6 +29,30 @@ Defaults shown for React + Tailwind; adapt the idiom to the target framework
 The **primary axis** follows `mode` (horizontal = main axis is X). `justify-*`
 controls the primary axis, `items-*` the counter axis — same as flexbox.
 
+### Padding, gap, and the absence of "margin" — be exact
+
+Figma auto-layout has **no per-child margin**. The space you see comes from:
+
+- **parent `padding`** — per-side `[top, right, bottom, left]`, often asymmetric.
+  Map each side on its own: `[0,16,0,0]` → `pr-4` only. Collapse to `px-/py-/p-`
+  *only* when the sides are truly equal. The inspector prints `pad[T/R/B/L]=…`.
+- **parent `itemSpacing`** → `gap-*`. `gap=0` is meaningful (siblings touch) —
+  don't drop it or assume a framework default.
+- a child of a **non-auto-layout** frame is placed by `x`/`y`; that offset is the
+  effective margin (inspector: `@(x,y)←offset`) — reproduce with absolute
+  positioning, an explicit margin, or a centering rule per intent.
+
+Pick exact spacing utilities: a raw `itemSpacing: 6` is `gap-1.5` (6px) only if
+the scale matches — otherwise `gap-[6px]`, or `gap-[var(--token)]` when bound.
+Never substitute a "close" scale step for a precise px value.
+
+### Per-corner radius and per-side stroke
+
+`cornerRadius` can be `{topLeft, topRight, bottomRight, bottomLeft}` and
+`strokeWeight` `{top, right, bottom, left}` — both independent. `0/0/15/15` radius
+→ `rounded-b-[15px]`; a stroke with only `bottom:1` → `border-b`. Don't round the
+whole box or border every side when the design specifies a subset.
+
 ## `layoutSizing` → width/height behaviour
 
 | `layoutSizing.h` / `.v` | meaning | Tailwind |
