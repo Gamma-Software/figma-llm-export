@@ -132,6 +132,29 @@ TS/JS). Use token classes/vars from step 2 throughout. Dimension tokens with no
 utility class become arbitrary values referencing the var, e.g.
 `h-[var(--mac-top-height)]`, `w-[var(--app-sidebar-width)]`.
 
+### 5b. States, semantics & accessibility (a static export shows ONE state)
+
+The payload is a single frozen frame — these are never in it but almost always
+required:
+
+- **Semantic HTML**: an icon that does something is a `<button>` (with
+  `aria-label`), nav is `<nav>`, lists are `<ul>` — not a div soup.
+- **Interactive states**: implement hover / focus-visible / active / disabled for
+  buttons, tabs, inputs using the app's conventions. Hidden sibling layers and
+  component **variants** (`componentProperties`) reveal the other states.
+- **Selected vs unselected is a state, not two elements** — e.g. the topbar's
+  active "List" (`text-primary`) vs inactive "Kanban" (`text-tertiary`) is one
+  tab component with a `data-state`/prop, not two hardcoded spans.
+- **Patterns over boxes**: recognise the real widget (List/Kanban = Tabs /
+  segmented control, sun icon = theme toggle, breadcrumb = nav) and use the app's
+  primitive (shadcn `Tabs`, `Button`, …).
+- **Effects & non-solid fills**: don't drop shadows/blur (`effects`), gradients,
+  image fills, layer opacity, rotation, or `clipsContent` — the inspector surfaces
+  each. Image fills need the asset exported separately.
+
+Full list of routinely-dropped details: **`references/fidelity-checklist.md`** —
+walk it before finishing.
+
 ### 6. Verify against the screenshot
 
 This is not optional. Render the result (project's preview/dev server, or the
@@ -153,4 +176,5 @@ it. List any deltas. Then audit for hardcoded values that should have been token
 
 - `references/payload-schema.md` — every key in the payload and what it means.
 - `references/token-mapping.md` — turning Figma variables into app tokens.
-- `references/node-types.md` — Figma node/auto-layout → framework constructs.
+- `references/node-types.md` — Figma node/auto-layout/effects/fills/constraints → framework constructs.
+- `references/fidelity-checklist.md` — the details design-to-code routinely drops; walk it before finishing.

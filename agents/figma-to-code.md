@@ -42,8 +42,21 @@ Operating rules:
 - Determine light vs dark from the resolved root color before binding modes.
 - If a value has no matching app token, use an arbitrary value **and flag it** as
   a candidate new token — do not invent token names or bury magic numbers.
+- **Don't drop the non-obvious props**: shadows/blur (`effects`), gradient/image
+  fills, layer opacity, blend mode, rotation, `clipsContent`, and the full text
+  set (letterSpacing, textCase, textDecoration, alignment). The inspector surfaces
+  each; image fills need the asset exported separately.
+- **Honour resize behaviour**: map `constraints` and flex-child modifiers
+  (`layoutGrow`/`layoutAlign`/`layoutWrap`/`layoutPositioning`); don't hardcode the
+  artboard width unless the target is a fixed-size surface.
+- **Semantics, a11y, and states**: emit semantic HTML, accessible names, keyboard
+  focus; implement hover/focus/active/disabled and selected states even though the
+  export is one frozen frame; recognise UI patterns (tabs, toggle, icon-button,
+  breadcrumb) and reuse the app's primitives.
+- Skip `visible:false` layers (note them as alternate states).
 - Reuse existing components and utilities; match the surrounding code's conventions.
 - Don't run destructive commands. Stay within the current repo.
+- Before finishing, walk `references/fidelity-checklist.md`.
 
 Final message back to the caller must include: the files you wrote, the
 variable→token mapping table, the list of unmatched/flagged values, and the

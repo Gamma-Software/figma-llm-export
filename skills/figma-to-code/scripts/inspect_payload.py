@@ -117,15 +117,62 @@ def fmt_size(node):
     return f"{disp(w) if w is not None else '?'}×{disp(h) if h is not None else '?'}"
 
 
+def rgba(c):
+    """Effect/paint color may be a bound value, a hex, or {r,g,b,a} floats."""
+    if _is_bound(c):
+        return color_str(c)
+    if isinstance(c, dict) and "r" in c:
+        to = lambda x: round(x * 255)
+        return f"rgba({to(c['r'])},{to(c['g'])},{to(c['b'])},{round(c.get('a', 1), 2)})"
+    if isinstance(c, dict) and "value" in c:
+        return str(c["value"])
+    return str(c)
+
+
+def fmt_fill(f):
+    t = f.get("type")
+    if t == "SOLID":
+        tag = f"fill={color_str(f.get('color'))}"
+    elif t and t.startswith("GRADIENT"):
+        stops = f.get("gradientStops") or []
+        tag = f"fill={t} ⚠GRADIENT({len(stops)} stops — not a token)"
+    elif t == "IMAGE":
+        tag = f"fill=IMAGE(hash={f.get('imageHash')}) ⚠needs-asset-export"
+    else:
+        tag = f"fill={t}"
+    op = f.get("opacity")
+    if op not in (None, 1):
+        tag += f" @{op}"
+    bm = f.get("blendMode")
+    if bm and bm != "NORMAL":
+        tag += f" blend={bm}"
+    return tag
+
+
+def fmt_effects(node):
+    out = []
+    for e in node.get("effects") or []:
+        if not e.get("visible", True):
+            continue
+        t = e.get("type")
+        off = e.get("offset") or {}
+        if t in ("DROP_SHADOW", "INNER_SHADOW"):
+            label = "shadow" if t == "DROP_SHADOW" else "inner-shadow"
+            out.append(f"{label}(x={off.get('x')},y={off.get('y')},blur={e.get('radius')},"
+                       f"spread={e.get('spread', 0)},color={rgba(e.get('color'))})")
+        elif t in ("LAYER_BLUR", "BACKGROUND_BLUR"):
+            out.append(f"{t.lower().replace('_', '-')}(radius={e.get('radius')})")
+    return "  ".join(out)
+
+
 def fmt_paint(node):
     out = []
     for f in node.get("fills") or []:
-        if f.get("visible", True) and f.get("type") == "SOLID":
-            op = f.get("opacity")
-            tag = f"fill={color_str(f.get('color'))}"
-            if op not in (None, 1):
-                tag += f" @{op}"
-            out.append(tag)
+        if f.get("visible", True):
+            out.append(fmt_fill(f))
+    op = node.get("opacity")
+    if op not in (None, 1):
+        out.append(f"layer-opacity={op}")
     for s in node.get("strokes") or []:
         if s.get("visible", True) and s.get("type") == "SOLID":
             out.append(f"stroke={color_str(s.get('color'))}")
@@ -157,6 +204,16 @@ def fmt_text(node):
     lh = node.get("lineHeight")
     if isinstance(lh, dict) and lh.get("value") is not None:
         parts.append(f"lh={lh['value']}{lh.get('unit','')[:2]}")
+    lsp = node.get("letterSpacing")
+    if isinstance(lsp, dict) and lsp.get("value"):
+        parts.append(f"tracking={lsp['value']}{lsp.get('unit','')[:1]}")
+    if node.get("textCase") and node["textCase"] != "ORIGINAL":
+        parts.append(node["textCase"].lower())
+    if node.get("textDecoration") and node["textDecoration"] != "NONE":
+        parts.append(node["textDecoration"].lower())
+    align = node.get("textAlignHorizontal")
+    if align and align != "LEFT":
+        parts.append(f"align={align.lower()}")
     return "  ".join(str(p) for p in parts)
 
 
@@ -168,6 +225,10 @@ def walk(node, depth, maxd, lines, parent_auto=True):
     # Child of a non-auto-layout parent: x/y ARE its offset (effective margins).
     if not parent_auto and (node.get("x") or node.get("y")):
         header += f"  @({node.get('x')},{node.get('y')})←offset"
+    if node.get("rotation"):
+        header += f"  rot={node['rotation']}°"
+    if node.get("visible") is False:
+        header += "  [HIDDEN — do not render]"
     if ntype == "INSTANCE" and node.get("mainComponent"):
         header += f"  ⟶ component:{node['mainComponent']}"
     lines.append(header)
@@ -178,6 +239,11 @@ def walk(node, depth, maxd, lines, parent_auto=True):
     paint = fmt_paint(node)
     if paint:
         meta.append(paint)
+    eff = fmt_effects(node)
+    if eff:
+        meta.append(eff)
+    if node.get("clipsContent"):
+        meta.append("clip(overflow-hidden)")
     txt = fmt_text(node)
     if txt:
         meta.append("text " + txt)

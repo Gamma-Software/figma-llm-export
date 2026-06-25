@@ -84,6 +84,51 @@ Prefer not to pin a width when the node `HUG`s — let content size it. Pin only
    wire its `stroke`/`fill` to the mapped color token (replace literal colors
    with `currentColor` where it should inherit).
 
+## Effects → shadows & blur
+
+| Figma effect | CSS / Tailwind |
+|--------------|----------------|
+| `DROP_SHADOW` | `box-shadow` / `shadow-*` (x, y, blur, spread, color) |
+| `INNER_SHADOW` | `box-shadow: inset …` / `shadow-inner` |
+| `LAYER_BLUR` | `filter: blur()` / `blur-*` |
+| `BACKGROUND_BLUR` | `backdrop-filter: blur()` / `backdrop-blur-*` |
+
+Multiple effects stack. The inspector prints each as `shadow(x=…,y=…,blur=…,
+spread=…,color=…)`. Reproduce the exact offsets/blur, not a generic `shadow-md`.
+
+## Fills beyond solid
+
+| `fills[].type` | output |
+|----------------|--------|
+| `SOLID` | color (map the token) |
+| `GRADIENT_LINEAR/RADIAL/ANGULAR` | CSS `linear-/radial-/conic-gradient` from `gradientStops` + angle/handles; **no single token** |
+| `IMAGE` | `<img>` or `background-image` — the image bytes are **not** inline; export the asset (the node's PNG crop) and reference it; `imageHash` identifies it |
+
+`fills` is an array (bottom→top); a node can layer several. Layer `opacity`,
+fill `opacity`, and `blendMode` (`mix-blend-*`) are distinct — keep all three.
+
+## Constraints → resize behaviour
+
+`constraints {h,v}` says how the node reacts when its parent resizes — essential
+for anything not in a hugging auto-layout:
+
+| value | horizontal | vertical |
+|-------|-----------|----------|
+| `MIN` | pinned left | pinned top |
+| `MAX` | pinned right (`ml-auto`/`right-0`) | pinned bottom |
+| `CENTER` | centered | centered |
+| `STRETCH` | full width (`inset-x-0`/`w-full`) | full height |
+| `SCALE` | scales proportionally | scales proportionally |
+
+## Flex-child modifiers
+
+| Figma | CSS / Tailwind |
+|-------|----------------|
+| `layoutGrow: 1` | `flex-1` / `grow` |
+| `layoutAlign: STRETCH` | `self-stretch` |
+| `layoutPositioning: ABSOLUTE` | `absolute` (ignores parent flow) |
+| `layoutWrap: WRAP` | `flex-wrap` |
+
 ## Component instances
 
 - `mainComponent` is the master component name — **search the repo for it first**
