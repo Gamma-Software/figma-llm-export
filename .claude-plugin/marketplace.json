@@ -1,0 +1,17 @@
+{
+  "name": "figma-llm-export",
+  "owner": {
+    "name": "Gamma Software",
+    "url": "https://github.com/Gamma-Software"
+  },
+  "metadata": {
+    "description": "Design-to-code tooling for the LLM Export Figma plugin."
+  },
+  "plugins": [
+    {
+      "name": "figma-to-code",
+      "source": "./",
+      "description": "Turn a figma-llm-export payload into application code: token-aware, auto-layout to flexbox, instance to component, verified against the exported screenshot. Ships a skill and a subagent."
+    }
+  ]
+}

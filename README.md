@@ -111,6 +111,37 @@ object — byte-identical to Figma's own variable export (`<Collection>.json`).
 With no collection picked it falls back to the referenced subset. Picks persist
 across reloads.
 
+## Consume it with Claude Code — the `figma-to-code` plugin
+
+This repo also ships a **Claude Code plugin** that turns an exported payload
+into real application code. It's the consumer side of the export: it reads the
+node tree, **maps each Figma `variable` to your app's design token instead of
+hardcoding the value**, translates auto-layout to flexbox, matches instances to
+your existing components, and verifies the result against the exported
+screenshot. It bundles a **skill** (in-thread workflow) and a **subagent**
+(delegated, isolated conversions) — installed together.
+
+```bash
+# in Claude Code
+/plugin marketplace add Gamma-Software/figma-llm-export
+/plugin install figma-to-code@figma-llm-export
+```
+
+Then export a selection from this Figma plugin, save the payload, and ask:
+
+> implement `topbar.json` in `src/components/…`
+
+Claude invokes the skill automatically (or run `/figma-to-code:figma-to-code`,
+or delegate to the `figma-to-code` subagent). The plugin lives under
+[`.claude-plugin/`](.claude-plugin/), [`skills/figma-to-code/`](skills/figma-to-code/),
+and [`agents/`](agents/); a stdlib-only helper
+([`inspect_payload.py`](skills/figma-to-code/scripts/inspect_payload.py)) prints
+the token-annotated node tree and extracts the PNG/SVG crops.
+
+It's framework-agnostic (React/Tailwind/shadcn, Vue, plain HTML, SwiftUI, …) and
+works best when the Figma file's variable collection mirrors your app's tokens —
+then the mapping is near 1:1.
+
 ## Develop
 
 ```bash

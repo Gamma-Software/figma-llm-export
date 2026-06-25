@@ -1,0 +1,348 @@
+#!/usr/bin/env python3
+"""Inspect a figma-llm-export payload for design-to-code work.
+
+Stdlib-only. Given the JSON payload produced by the LLM Export Figma plugin,
+this prints three things an agent needs before writing code:
+
+  1. a compact node tree with layout + the design TOKEN behind each value
+  2. a "tokens used" report (every Figma variable the selection references)
+  3. extracted images on disk (PNG crops decoded from base64, SVG crops as .svg)
+
+Usage:
+    python3 inspect_payload.py <payload.json> [--out DIR] [--no-images] [--max-depth N]
+
+The point of the token annotations: NEVER hardcode the resolved value in code.
+Map the `Theme/foo` variable name to your app's design token instead.
+"""
+import argparse
+import base64
+import json
+import os
+import sys
+
+
+def _is_bound(v):
+    return isinstance(v, dict) and "value" in v and "variable" in v
+
+
+def disp(v):
+    """Render a possibly-bound value as 'value  ⟨token⟩' or just the value."""
+    if _is_bound(v):
+        return f"{v['value']}  «{v['variable']}»"
+    return str(v)
+
+
+def color_str(color):
+    """A fill/stroke .color entry — may be {value,variable} or plain hex."""
+    if _is_bound(color):
+        return f"{color['value']}  «{color['variable']}»"
+    if isinstance(color, dict) and "value" in color:
+        return str(color["value"])
+    return str(color)
+
+
+def collect_tokens(node, acc):
+    """Walk any nested structure, collecting every {value,variable} pair."""
+    if isinstance(node, dict):
+        if _is_bound(node):
+            acc.setdefault(node["variable"], node["value"])
+        for val in node.values():
+            collect_tokens(val, acc)
+    elif isinstance(node, list):
+        for item in node:
+            collect_tokens(item, acc)
+
+
+def padding_sides(node):
+    """Normalize padding from either `layout.padding:[t,r,b,l]` or the flat
+    paddingTop/Right/Bottom/Left fields. Returns {top,right,bottom,left} of
+    possibly-bound values, or None when no padding is present."""
+    layout = node.get("layout") or {}
+    arr = layout.get("padding")
+    if isinstance(arr, list) and len(arr) == 4:
+        t, r, b, l = arr
+    else:
+        t = node.get("paddingTop", layout.get("paddingTop", 0))
+        r = node.get("paddingRight", layout.get("paddingRight", 0))
+        b = node.get("paddingBottom", layout.get("paddingBottom", 0))
+        l = node.get("paddingLeft", layout.get("paddingLeft", 0))
+    sides = {"top": t, "right": r, "bottom": b, "left": l}
+    if any(s for s in sides.values() if (s.get("value") if _is_bound(s) else s)):
+        return sides
+    return None
+
+
+def item_spacing(node):
+    layout = node.get("layout") or {}
+    return layout.get("itemSpacing", node.get("itemSpacing"))
+
+
+def layout_mode(node):
+    layout = node.get("layout") or {}
+    return layout.get("mode") or node.get("layoutMode")
+
+
+def fmt_layout(node):
+    bits = []
+    layout = node.get("layout") or {}
+    mode = layout_mode(node)
+    if mode and mode != "NONE":
+        bits.append(f"flex:{mode.lower()}")
+        gap = item_spacing(node)
+        # gap of 0 is meaningful too — print it explicitly so it isn't assumed.
+        if gap is not None:
+            bits.append(f"gap={disp(gap)}")
+        pad = padding_sides(node)
+        if pad:
+            bits.append("pad[T/R/B/L]=" + "/".join(disp(pad[k]) for k in
+                                                    ("top", "right", "bottom", "left")))
+        if layout.get("primaryAxisAlignItems"):
+            bits.append(f"justify={layout['primaryAxisAlignItems']}")
+        if layout.get("counterAxisAlignItems"):
+            bits.append(f"align={layout['counterAxisAlignItems']}")
+    else:
+        # Not auto-layout: padding may still be set on a plain frame.
+        pad = padding_sides(node)
+        if pad:
+            bits.append("pad[T/R/B/L]=" + "/".join(disp(pad[k]) for k in
+                                                    ("top", "right", "bottom", "left")))
+    ls = node.get("layoutSizing") or {}
+    if ls:
+        bits.append(f"sizing={ls.get('h','?')}/{ls.get('v','?')}")
+    return "  ".join(bits)
+
+
+def fmt_size(node):
+    w, h = node.get("width"), node.get("height")
+    return f"{disp(w) if w is not None else '?'}×{disp(h) if h is not None else '?'}"
+
+
+def rgba(c):
+    """Effect/paint color may be a bound value, a hex, or {r,g,b,a} floats."""
+    if _is_bound(c):
+        return color_str(c)
+    if isinstance(c, dict) and "r" in c:
+        to = lambda x: round(x * 255)
+        return f"rgba({to(c['r'])},{to(c['g'])},{to(c['b'])},{round(c.get('a', 1), 2)})"
+    if isinstance(c, dict) and "value" in c:
+        return str(c["value"])
+    return str(c)
+
+
+def fmt_fill(f):
+    t = f.get("type")
+    if t == "SOLID":
+        tag = f"fill={color_str(f.get('color'))}"
+    elif t and t.startswith("GRADIENT"):
+        stops = f.get("gradientStops") or []
+        tag = f"fill={t} ⚠GRADIENT({len(stops)} stops — not a token)"
+    elif t == "IMAGE":
+        tag = f"fill=IMAGE(hash={f.get('imageHash')}) ⚠needs-asset-export"
+    else:
+        tag = f"fill={t}"
+    op = f.get("opacity")
+    if op not in (None, 1):
+        tag += f" @{op}"
+    bm = f.get("blendMode")
+    if bm and bm != "NORMAL":
+        tag += f" blend={bm}"
+    return tag
+
+
+def fmt_effects(node):
+    out = []
+    for e in node.get("effects") or []:
+        if not e.get("visible", True):
+            continue
+        t = e.get("type")
+        off = e.get("offset") or {}
+        if t in ("DROP_SHADOW", "INNER_SHADOW"):
+            label = "shadow" if t == "DROP_SHADOW" else "inner-shadow"
+            out.append(f"{label}(x={off.get('x')},y={off.get('y')},blur={e.get('radius')},"
+                       f"spread={e.get('spread', 0)},color={rgba(e.get('color'))})")
+        elif t in ("LAYER_BLUR", "BACKGROUND_BLUR"):
+            out.append(f"{t.lower().replace('_', '-')}(radius={e.get('radius')})")
+    return "  ".join(out)
+
+
+def fmt_paint(node):
+    out = []
+    for f in node.get("fills") or []:
+        if f.get("visible", True):
+            out.append(fmt_fill(f))
+    op = node.get("opacity")
+    if op not in (None, 1):
+        out.append(f"layer-opacity={op}")
+    for s in node.get("strokes") or []:
+        if s.get("visible", True) and s.get("type") == "SOLID":
+            out.append(f"stroke={color_str(s.get('color'))}")
+    sw = node.get("strokeWeight")
+    if isinstance(sw, dict) and any(sw.get(k) for k in ("top", "right", "bottom", "left")):
+        out.append(f"strokeW={ {k: disp(v) for k, v in sw.items() if v} }")
+    cr = node.get("cornerRadius")
+    if cr is not None:
+        if isinstance(cr, dict):
+            corners = {k: disp(v) for k, v in cr.items() if v}
+            if corners:
+                out.append(f"radius={corners}")
+        elif cr:
+            out.append(f"radius={disp(cr)}")
+    return "  ".join(out)
+
+
+def fmt_text(node):
+    if node.get("type") != "TEXT":
+        return ""
+    parts = [f'"{node.get("characters","")}"']
+    fn = node.get("fontName") or {}
+    if fn:
+        parts.append(f"{fn.get('family')} {fn.get('style')}")
+    if node.get("fontSize") is not None:
+        parts.append(f"{disp(node['fontSize'])}px")
+    if node.get("fontWeight"):
+        parts.append(f"w{node['fontWeight']}")
+    lh = node.get("lineHeight")
+    if isinstance(lh, dict) and lh.get("value") is not None:
+        parts.append(f"lh={lh['value']}{lh.get('unit','')[:2]}")
+    lsp = node.get("letterSpacing")
+    if isinstance(lsp, dict) and lsp.get("value"):
+        parts.append(f"tracking={lsp['value']}{lsp.get('unit','')[:1]}")
+    if node.get("textCase") and node["textCase"] != "ORIGINAL":
+        parts.append(node["textCase"].lower())
+    if node.get("textDecoration") and node["textDecoration"] != "NONE":
+        parts.append(node["textDecoration"].lower())
+    align = node.get("textAlignHorizontal")
+    if align and align != "LEFT":
+        parts.append(f"align={align.lower()}")
+    return "  ".join(str(p) for p in parts)
+
+
+def walk(node, depth, maxd, lines, parent_auto=True):
+    pad = "  " * depth
+    name = node.get("name", "?")
+    ntype = node.get("type", "?")
+    header = f"{pad}• {name}  [{ntype}]  {fmt_size(node)}"
+    # Child of a non-auto-layout parent: x/y ARE its offset (effective margins).
+    if not parent_auto and (node.get("x") or node.get("y")):
+        header += f"  @({node.get('x')},{node.get('y')})←offset"
+    if node.get("rotation"):
+        header += f"  rot={node['rotation']}°"
+    if node.get("visible") is False:
+        header += "  [HIDDEN — do not render]"
+    if ntype == "INSTANCE" and node.get("mainComponent"):
+        header += f"  ⟶ component:{node['mainComponent']}"
+    lines.append(header)
+    meta = []
+    lay = fmt_layout(node)
+    if lay:
+        meta.append(lay)
+    paint = fmt_paint(node)
+    if paint:
+        meta.append(paint)
+    eff = fmt_effects(node)
+    if eff:
+        meta.append(eff)
+    if node.get("clipsContent"):
+        meta.append("clip(overflow-hidden)")
+    txt = fmt_text(node)
+    if txt:
+        meta.append("text " + txt)
+    cp = node.get("componentProperties")
+    if cp:
+        meta.append(f"props={cp}")
+    for m in meta:
+        lines.append(f"{pad}    {m}")
+    if depth >= maxd:
+        kids = node.get("children") or []
+        if kids:
+            lines.append(f"{pad}    … {len(kids)} children (depth cut)")
+        return
+    mode = layout_mode(node)
+    child_auto = bool(mode and mode != "NONE")
+    for child in node.get("children") or []:
+        walk(child, depth + 1, maxd, lines, parent_auto=child_auto)
+
+
+def extract_images(payload, outdir):
+    written = []
+    os.makedirs(outdir, exist_ok=True)
+    for im in payload.get("images") or []:
+        ident = (im.get("name") or im.get("id") or "img").replace("/", "_").replace(" ", "_")
+        # SVG crops carry raw markup; PNG crops carry base64.
+        if im.get("svg") or (im.get("mimeType") == "image/svg+xml"):
+            markup = im.get("svg") or im.get("markup") or im.get("base64") or ""
+            path = os.path.join(outdir, f"{ident}.svg")
+            with open(path, "w") as fh:
+                fh.write(markup)
+            written.append(path)
+        elif im.get("base64"):
+            path = os.path.join(outdir, f"{ident}.png")
+            with open(path, "wb") as fh:
+                fh.write(base64.b64decode(im["base64"]))
+            written.append(path)
+    return written
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Inspect a figma-llm-export payload.")
+    ap.add_argument("payload", help="path to the exported .json payload")
+    ap.add_argument("--out", help="dir for extracted images (default: <payload>.assets)")
+    ap.add_argument("--no-images", action="store_true", help="skip image extraction")
+    ap.add_argument("--max-depth", type=int, default=12)
+    args = ap.parse_args()
+
+    with open(args.payload) as fh:
+        payload = json.load(fh)
+
+    print("=" * 72)
+    print(f"file: {payload.get('file')!r}   page: {payload.get('page')!r}   "
+          f"selection: {payload.get('selectionCount')}   "
+          f"exported: {payload.get('exportedAt')}")
+    print("=" * 72)
+
+    print("\n## NODE TREE  (value «design-token» — map the token, don't hardcode the value)\n")
+    lines = []
+    for node in payload.get("nodes") or []:
+        walk(node, 0, args.max_depth, lines)
+    print("\n".join(lines))
+
+    # Tokens referenced inline on values
+    inline = {}
+    collect_tokens(payload.get("nodes") or [], inline)
+    print("\n## TOKENS USED  (Figma variable ⟶ resolved value — map each to an app token)\n")
+    for name in sorted(inline):
+        print(f"  {name}  =  {inline[name]}")
+
+    # Top-level variables table (type + collection + per-mode)
+    variables = payload.get("variables") or []
+    if variables:
+        print("\n## VARIABLES (referenced, self-contained)\n")
+        for v in variables:
+            vals = v.get("valuesByMode") or {}
+            print(f"  [{v.get('collection')}] {v.get('name')} : {v.get('type')} = "
+                  f"{list(vals.values())}")
+
+    cols = payload.get("variableCollections") or []
+    if cols:
+        print("\n## FULL COLLECTION DUMPS\n")
+        for c in cols:
+            print(f"  collection {c.get('name')!r}: modes={c.get('modes')}  "
+                  f"#vars={len(c.get('variables') or [])}")
+
+    if not args.no_images:
+        outdir = args.out or (os.path.splitext(args.payload)[0] + ".assets")
+        written = extract_images(payload, outdir)
+        print(f"\n## IMAGES  ({len(written)} written to {outdir})\n")
+        for p in written:
+            print(f"  {p}")
+        print("\n→ Read the PNG(s) with the Read tool before and after coding "
+              "to ground-truth the visual. Read .svg files as text for icon paths.")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except FileNotFoundError as e:
+        sys.exit(f"payload not found: {e}")
+    except json.JSONDecodeError as e:
+        sys.exit(f"invalid JSON: {e}")
